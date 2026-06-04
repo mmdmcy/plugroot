@@ -1,0 +1,20 @@
+# Copy to plugroot.local.toml for one machine. Keep the copy out of Git.
+
+[host]
+name = "my-private-host"
+private_ip = "127.0.0.1"
+user = "plugroot"
+
+[[service]]
+id = "example-port"
+name = "Example Port"
+plane = "private"
+category = "example"
+kind = "port"
+host = "127.0.0.1"
+port = 8080
+url = "http://127.0.0.1:8080"
+description = "Example local listener."
+controls = []
+ports = ["8080/tcp local"]
+optional = true

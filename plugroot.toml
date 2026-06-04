@@ -1,0 +1,22 @@
+[plugroot]
+root = "${PLUGROOT_ROOT:-/opt/plugroot}"
+repo_dir = "${PLUGROOT_REPO_DIR:-/opt/plugroot/repos}"
+
+[host]
+name = "${PLUGROOT_HOSTNAME:-plugroot-host}"
+private_ip = "${PLUGROOT_PRIVATE_IP:-127.0.0.1}"
+user = "${PLUGROOT_USER:-plugroot}"
+
+[[service]]
+id = "plugroot-web"
+name = "Plugroot Web"
+plane = "private"
+category = "control"
+kind = "port"
+host = "127.0.0.1"
+port = 8786
+url = "http://${PLUGROOT_WEB_BIND:-127.0.0.1:8786}"
+description = "Lightweight web dashboard served by `plugroot web`."
+controls = []
+ports = ["8786/tcp local"]
+optional = true

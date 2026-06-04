@@ -1,0 +1,16 @@
+[package]
+name = "plugroot"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Private-first selfhost harness for Compose stacks, Git checkouts, systemd units, and status surfaces."
+
+[dependencies]
+base64 = "0.22"
+crossterm = "0.28"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+
+[dev-dependencies]
+tempfile = "3"

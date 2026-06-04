@@ -1,0 +1,12 @@
+name: plugroot-example
+
+services:
+  web:
+    image: nginx:alpine
+    container_name: plugroot-example-web
+    restart: unless-stopped
+    ports:
+      - "${PLUGROOT_PRIVATE_IP:-127.0.0.1}:${EXAMPLE_WEB_PORT:-8080}:80/tcp"
+    labels:
+      plugroot.service: "example-web"
+      plugroot.role: "demo"
