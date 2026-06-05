@@ -59,6 +59,7 @@ plugroot web [--bind <addr:port>]
 ## Included Examples
 
 - Neutral Compose stack bound to `PLUGROOT_PRIVATE_IP`.
+- Vaultwarden pattern for a private Bitwarden-compatible password manager.
 - Git checkout and systemd examples in `docs/manifest.md`.
 - Plugroot Web as a local private dashboard.
 - Optional Plugroot Web Basic auth through `PLUGROOT_WEB_USER` and
@@ -74,8 +75,12 @@ plugroot.local.toml
 repos/
 services/*/data/
 services/*/config/
+services/*/secrets/
 media/
 backups/
+*.bitwarden-export*
+*.proton-pass-export*
+*.kdbx
 *.db
 *.log
 ```

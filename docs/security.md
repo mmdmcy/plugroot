@@ -14,6 +14,9 @@ Plugroot is private-first.
 - `plugroot audit-public` checks tracked files for ignored private paths,
   common secret markers, Tailscale-style private IPs, and optional local
   denylist terms.
+- Password-manager services are high-value targets. Keep their databases,
+  exports, backup archives, tokens, and real private URLs in ignored local
+  files only.
 
 ## Network Boundary
 
@@ -27,6 +30,10 @@ trusted client
 
 Do not bind private services to a public IP unless you intentionally design and
 document that exposure first.
+
+For Vaultwarden-style password-manager services, prefer a localhost-bound
+backend behind private-network HTTPS. Do not enable public tunnels for password
+managers by default.
 
 ## Local Denylist
 

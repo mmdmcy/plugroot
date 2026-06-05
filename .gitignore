@@ -11,9 +11,13 @@
 /backups/*
 !/backups/README.md
 services/*/.env
+services/*/secrets/
 services/*/data/
 services/*/cache/
 services/*/config/
+*.bitwarden-export*
+*.proton-pass-export*
+*.kdbx
 *.sqlite
 *.sqlite3
 *.db

@@ -18,3 +18,17 @@ description = "Example local listener."
 controls = []
 ports = ["8080/tcp local"]
 optional = true
+
+[[service]]
+id = "vaultwarden"
+name = "Vaultwarden"
+plane = "private"
+category = "security"
+kind = "compose"
+path = "examples/compose/vaultwarden"
+url = "${VAULTWARDEN_DOMAIN:-https://example-private-host.ts.net:8443}"
+description = "Private Bitwarden-compatible password manager."
+containers = ["plugroot-vaultwarden"]
+controls = ["start", "stop", "restart", "logs"]
+ports = ["${VAULTWARDEN_HTTP_PORT:-8089}/tcp local"]
+optional = true
