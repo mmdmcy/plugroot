@@ -30,6 +30,8 @@ certificates.
 - Pin the Vaultwarden image tag and digest.
 - Bind the container to `127.0.0.1`.
 - Put HTTPS in front of it with a private-network proxy.
+- Use SMTP-backed signup verification for initial account creation with modern
+  clients. A local mail catcher can be enough for a private first-account setup.
 - Disable anonymous signups after creating the first account.
 - Disable invitations unless sharing is explicitly needed.
 - Disable password hints.
