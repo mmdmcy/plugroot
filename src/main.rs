@@ -1577,11 +1577,32 @@ impl TuiApp {
     }
 
     fn refresh(&mut self) {
-        self.rows = status_rows(&self.ctx);
-        if self.selected >= self.rows.len() {
-            self.selected = self.rows.len().saturating_sub(1);
+        let selected_id = self.rows.get(self.selected).map(|row| row.id.clone());
+        let selected_index = self.selected;
+        match Context::load(self.ctx.root.clone()) {
+            Ok(ctx) => self.ctx = ctx,
+            Err(err) => {
+                self.message = format!("refresh failed: {err}");
+                return;
+            }
         }
+        self.rows = status_rows(&self.ctx);
+        self.restore_selection(selected_id.as_deref(), selected_index);
         self.last_refresh = Instant::now();
+    }
+
+    fn restore_selection(&mut self, selected_id: Option<&str>, selected_index: usize) {
+        if self.rows.is_empty() {
+            self.selected = 0;
+            return;
+        }
+        if let Some(id) = selected_id {
+            if let Some(index) = self.rows.iter().position(|row| row.id == id) {
+                self.selected = index;
+                return;
+            }
+        }
+        self.selected = selected_index.min(self.rows.len().saturating_sub(1));
     }
 
     fn up(&mut self) {
@@ -2105,6 +2126,40 @@ port = 9
         let unit = generate_unit(&ctx, &service).unwrap().unwrap();
         assert!(unit.contains("ExecStart=/usr/bin/python3 server.py"));
         assert!(unit.contains("WantedBy=default.target"));
+    }
+
+    #[test]
+    fn tui_refresh_reloads_manifest_overlay() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join("plugroot.toml"),
+            r#"
+[[service]]
+id = "alpha"
+name = "Alpha"
+kind = "noop"
+"#,
+        )
+        .unwrap();
+        let ctx = Context::load(dir.path().to_path_buf()).unwrap();
+        let mut app = TuiApp::new(ctx);
+        assert_eq!(app.rows.len(), 1);
+        assert_eq!(app.rows[0].id, "alpha");
+
+        fs::write(
+            dir.path().join("plugroot.local.toml"),
+            r#"
+[[service]]
+id = "beta"
+name = "Beta"
+kind = "noop"
+"#,
+        )
+        .unwrap();
+
+        app.refresh();
+        assert!(app.rows.iter().any(|row| row.id == "beta"));
+        assert_eq!(app.rows[app.selected].id, "alpha");
     }
 
     #[test]
