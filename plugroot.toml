@@ -7,6 +7,12 @@ name = "${PLUGROOT_HOSTNAME:-plugroot-host}"
 private_ip = "${PLUGROOT_PRIVATE_IP:-127.0.0.1}"
 user = "${PLUGROOT_USER:-plugroot}"
 
+[[file]]
+source = "bin/plugroot-tui"
+target = "/usr/local/bin/plugroot-tui"
+owner = "root:root"
+mode = "0755"
+
 [[service]]
 id = "plugroot-web"
 name = "Plugroot Web"

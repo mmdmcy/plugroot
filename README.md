@@ -24,6 +24,13 @@ cargo run -- apply --dry-run
 cargo run -- tui
 ```
 
+On an installed host, Plugroot can install a short TUI launcher:
+
+```bash
+sudo /opt/plugroot/bin/plugroot --root /opt/plugroot apply
+plugroot-tui
+```
+
 Build a release binary:
 
 ```bash
@@ -54,6 +61,7 @@ plugroot repos sync
 plugroot up|down|restart|logs <service|all>
 plugroot tui [--once]
 plugroot web [--bind <addr:port>]
+plugroot-tui
 ```
 
 ## Included Examples
