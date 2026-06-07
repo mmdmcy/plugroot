@@ -1,7 +1,7 @@
 # Copy to plugroot.local.toml for one machine. Keep the copy out of Git.
 
 [host]
-name = "my-private-host"
+name = "example-host"
 private_ip = "127.0.0.1"
 user = "plugroot"
 
@@ -20,15 +20,15 @@ ports = ["8080/tcp local"]
 optional = true
 
 [[service]]
-id = "vaultwarden"
-name = "Vaultwarden"
+id = "example-compose"
+name = "Example Compose"
 plane = "private"
-category = "security"
+category = "example"
 kind = "compose"
-path = "examples/compose/vaultwarden"
-url = "${VAULTWARDEN_DOMAIN:-https://example-private-host.ts.net:8443}"
-description = "Private Bitwarden-compatible password manager."
-containers = ["plugroot-vaultwarden"]
+path = "examples/compose"
+url = "http://${PLUGROOT_PRIVATE_IP:-127.0.0.1}:${EXAMPLE_WEB_PORT:-8080}"
+description = "Example Docker Compose stack."
+containers = ["plugroot-example-web"]
 controls = ["start", "stop", "restart", "logs"]
-ports = ["${VAULTWARDEN_HTTP_PORT:-8089}/tcp local"]
+ports = ["${EXAMPLE_WEB_PORT:-8080}/tcp"]
 optional = true

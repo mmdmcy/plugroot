@@ -51,6 +51,20 @@ plugroot.local.toml  ignored local overlay
 The public manifest can define services and repos. The ignored overlay can
 replace or add entries with the same `id` for one machine.
 
+## Public vs Local
+
+Plugroot's tracked repo is a clean-slate harness. It should contain generic
+examples, reusable code, and documentation only.
+
+Machine-specific apps, hostnames, domains, ports, service stacks, credentials,
+notes, media, backups, and operational scripts belong in ignored local files
+such as `.env`, `plugroot.local.toml`, `.plugroot/`, `repos/`, `services/*/data/`,
+and `backups/`.
+
+Do not add app-specific service patterns to the public repo unless they are
+intended as neutral examples for everyone and contain no personal operational
+choices.
+
 ## Commands
 
 ```text
@@ -67,7 +81,6 @@ plugroot-tui
 ## Included Examples
 
 - Neutral Compose stack bound to `PLUGROOT_PRIVATE_IP`.
-- Vaultwarden pattern for a private Bitwarden-compatible password manager.
 - Git checkout and systemd examples in `docs/manifest.md`.
 - Plugroot Web as a local private dashboard.
 - Optional Plugroot Web Basic auth through `PLUGROOT_WEB_USER` and

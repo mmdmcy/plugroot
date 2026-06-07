@@ -16,9 +16,8 @@ Plugroot is private-first.
   and optional local denylist terms.
 - `plugroot audit-public --install-hook` installs local pre-commit and
   pre-push hooks so the audit runs before commits and pushes.
-- Password-manager services are high-value targets. Keep their databases,
-  exports, backup archives, tokens, and real private URLs in ignored local
-  files only.
+- App-specific service definitions, real domains, service data, backup
+  archives, and tokens belong in ignored local files only.
 
 ## Network Boundary
 
@@ -33,9 +32,9 @@ trusted client
 Do not bind private services to a public IP unless you intentionally design and
 document that exposure first.
 
-For Vaultwarden-style password-manager services, prefer a localhost-bound
-backend behind private-network HTTPS. Do not enable public tunnels for password
-managers by default.
+For high-value services, prefer localhost-bound backends behind private-network
+HTTPS. Do not enable public tunnels unless that exposure is explicitly designed
+and documented.
 
 ## Local Denylist
 
