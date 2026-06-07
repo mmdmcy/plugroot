@@ -3,6 +3,7 @@ use std::env;
 use std::fs;
 use std::io::{self, Read, Stdout, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
+use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 use std::time::{Duration, Instant};
@@ -383,8 +384,7 @@ fn git_tracked_files(root: &Path) -> io::Result<Vec<String>> {
         .current_dir(root)
         .output()?;
     if !output.status.success() {
-        return Err(io::Error::new(
-            io::ErrorKind::Other,
+        return Err(io::Error::other(
             String::from_utf8_lossy(&output.stderr).trim().to_string(),
         ));
     }
@@ -691,8 +691,8 @@ fn cmd_list(ctx: &Context) -> io::Result<u8> {
 
 fn print_status_table(rows: &[StatusRow]) {
     println!(
-        "{:<9} {:<8} {:<13} {:<22} {}",
-        "STATE", "PLANE", "KIND", "SERVICE", "DETAIL"
+        "{:<9} {:<8} {:<13} {:<22} DETAIL",
+        "STATE", "PLANE", "KIND", "SERVICE"
     );
     for row in rows {
         println!(
@@ -989,7 +989,7 @@ fn sync_repo(repo: &Repo) -> io::Result<()> {
         );
         print_cmd_output(&out);
         if out.code != 0 {
-            return Err(io::Error::new(io::ErrorKind::Other, "git fetch failed"));
+            return Err(io::Error::other("git fetch failed"));
         }
         if let Some(git_ref) = &repo.git_ref {
             let out = run_command(
@@ -1005,7 +1005,7 @@ fn sync_repo(repo: &Repo) -> io::Result<()> {
             );
             print_cmd_output(&out);
             if out.code != 0 {
-                return Err(io::Error::new(io::ErrorKind::Other, "git checkout failed"));
+                return Err(io::Error::other("git checkout failed"));
             }
             let out = run_command(
                 "git",
@@ -1020,7 +1020,7 @@ fn sync_repo(repo: &Repo) -> io::Result<()> {
             );
             print_cmd_output(&out);
             if out.code != 0 {
-                return Err(io::Error::new(io::ErrorKind::Other, "git pull failed"));
+                return Err(io::Error::other("git pull failed"));
             }
         }
         return Ok(());
@@ -1037,7 +1037,7 @@ fn sync_repo(repo: &Repo) -> io::Result<()> {
     );
     print_cmd_output(&out);
     if out.code != 0 {
-        return Err(io::Error::new(io::ErrorKind::Other, "git clone failed"));
+        return Err(io::Error::other("git clone failed"));
     }
     if let Some(git_ref) = &repo.git_ref {
         let out = run_command(
@@ -1053,7 +1053,7 @@ fn sync_repo(repo: &Repo) -> io::Result<()> {
         );
         print_cmd_output(&out);
         if out.code != 0 {
-            return Err(io::Error::new(io::ErrorKind::Other, "git checkout failed"));
+            return Err(io::Error::other("git checkout failed"));
         }
     }
     Ok(())
@@ -1228,7 +1228,7 @@ fn ensure_success(out: CmdOutput) -> io::Result<()> {
     if out.code == 0 {
         return Ok(());
     }
-    Err(io::Error::new(io::ErrorKind::Other, out.text))
+    Err(io::Error::other(out.text))
 }
 
 fn cmd_action(ctx: &Context, action: &str, args: &[String]) -> io::Result<u8> {
@@ -1534,13 +1534,19 @@ fn cmd_tui(ctx: Context, args: &[String]) -> io::Result<u8> {
     let mut app = TuiApp::new(ctx);
     let mut term = TerminalGuard::enter()?;
     loop {
-        draw_tui(&mut term.stdout, &app)?;
+        draw_tui(&mut term.stdout, &mut app)?;
         if event::poll(Duration::from_millis(500))? {
             match event::read()? {
                 Event::Key(key) => match key.code {
                     KeyCode::Char('q') | KeyCode::Esc => break,
                     KeyCode::Down | KeyCode::Char('j') => app.down(),
                     KeyCode::Up | KeyCode::Char('k') => app.up(),
+                    KeyCode::Right => app.right(),
+                    KeyCode::Left => app.left(),
+                    KeyCode::PageDown => app.page_down(tui_list_capacity(terminal::size()?.1)),
+                    KeyCode::PageUp => app.page_up(tui_list_capacity(terminal::size()?.1)),
+                    KeyCode::Home => app.home(),
+                    KeyCode::End => app.end(),
                     KeyCode::Char('r') => app.refresh(),
                     KeyCode::Char('l') => app.action("logs"),
                     KeyCode::Char('o') => app.action("start"),
@@ -1560,6 +1566,8 @@ struct TuiApp {
     ctx: Context,
     rows: Vec<StatusRow>,
     selected: usize,
+    scroll_x: usize,
+    scroll_y: usize,
     message: String,
     last_refresh: Instant,
 }
@@ -1571,6 +1579,8 @@ impl TuiApp {
             ctx,
             rows,
             selected: 0,
+            scroll_x: 0,
+            scroll_y: 0,
             message: String::new(),
             last_refresh: Instant::now(),
         }
@@ -1594,6 +1604,7 @@ impl TuiApp {
     fn restore_selection(&mut self, selected_id: Option<&str>, selected_index: usize) {
         if self.rows.is_empty() {
             self.selected = 0;
+            self.scroll_y = 0;
             return;
         }
         if let Some(id) = selected_id {
@@ -1613,6 +1624,60 @@ impl TuiApp {
         if self.selected + 1 < self.rows.len() {
             self.selected += 1;
         }
+    }
+
+    fn right(&mut self) {
+        self.scroll_x = self.scroll_x.saturating_add(8);
+    }
+
+    fn left(&mut self) {
+        self.scroll_x = self.scroll_x.saturating_sub(8);
+    }
+
+    fn page_down(&mut self, visible_rows: usize) {
+        if self.rows.is_empty() {
+            return;
+        }
+        self.selected = (self.selected + visible_rows.max(1)).min(self.rows.len() - 1);
+    }
+
+    fn page_up(&mut self, visible_rows: usize) {
+        self.selected = self.selected.saturating_sub(visible_rows.max(1));
+    }
+
+    fn home(&mut self) {
+        self.selected = 0;
+        self.scroll_y = 0;
+        self.scroll_x = 0;
+    }
+
+    fn end(&mut self) {
+        if !self.rows.is_empty() {
+            self.selected = self.rows.len() - 1;
+        }
+    }
+
+    fn clamp_viewport(&mut self, visible_rows: usize, width: usize) {
+        if self.rows.is_empty() {
+            self.selected = 0;
+            self.scroll_y = 0;
+            self.scroll_x = 0;
+            return;
+        }
+
+        let visible_rows = visible_rows.max(1);
+        self.selected = self.selected.min(self.rows.len() - 1);
+        if self.selected < self.scroll_y {
+            self.scroll_y = self.selected;
+        } else if self.selected >= self.scroll_y + visible_rows {
+            self.scroll_y = self.selected + 1 - visible_rows;
+        }
+        self.scroll_y = self
+            .scroll_y
+            .min(self.rows.len().saturating_sub(visible_rows));
+        self.scroll_x = self
+            .scroll_x
+            .min(tui_content_width(self).saturating_sub(width));
     }
 
     fn selected_service(&self) -> Option<Service> {
@@ -1665,8 +1730,12 @@ impl Drop for TerminalGuard {
     }
 }
 
-fn draw_tui(stdout: &mut Stdout, app: &TuiApp) -> io::Result<()> {
-    let (width, height) = terminal::size()?;
+fn draw_tui(stdout: &mut Stdout, app: &mut TuiApp) -> io::Result<()> {
+    let (terminal_width, height) = terminal::size()?;
+    let width = terminal_width as usize;
+    let available = tui_list_capacity(height);
+    app.clamp_viewport(available, width);
+
     queue!(stdout, MoveTo(0, 0), Clear(ClearType::All))?;
     let online = app.rows.iter().filter(|row| row.state == "online").count();
     let name = app
@@ -1695,48 +1764,43 @@ fn draw_tui(stdout: &mut Stdout, app: &TuiApp) -> io::Result<()> {
         SetAttribute(Attribute::Bold),
         Print(fit(
             &format!("Plugroot - {name} - {ip} - user {user}"),
-            width as usize
+            width
         )),
         SetAttribute(Attribute::Reset),
         MoveTo(0, 1),
         Print(fit(
             &format!(
-                "{} online, {} attention, {} tracked - r refresh - l logs - o on - e restart - f off - q quit",
+                "{} online, {} attention, {} tracked - arrows move/pan - r refresh - l logs - o on - e restart - f off - q quit",
                 online,
                 app.rows.len().saturating_sub(online),
                 app.rows.len()
             ),
-            width as usize
+            width
         )),
         MoveTo(0, 2),
-        Print(line(width))
+        Print(line(terminal_width))
     )?;
 
     let list_top = 3u16;
-    let footer_rows = 6u16;
-    let available = height.saturating_sub(list_top + footer_rows).max(1) as usize;
-    let start = app.selected.saturating_sub(available.saturating_sub(1));
-    let end = (start + available).min(app.rows.len());
+    let visible = visible_rows(app, available);
     queue!(
         stdout,
         MoveTo(0, list_top),
         SetForegroundColor(Color::DarkGrey),
-        Print(fit(
+        Print(fit_window(
             "  STATE    PLANE    CATEGORY/KIND  SERVICE                         ACCESS",
-            width as usize
+            width,
+            app.scroll_x
         )),
         ResetColor
     )?;
-    for (row_index, row) in app.rows[start..end].iter().enumerate() {
-        let actual = start + row_index;
+    for (row_index, row) in app.rows[visible.clone()].iter().enumerate() {
+        let actual = visible.start + row_index;
         let y = list_top + 1 + row_index as u16;
         let marker = if actual == app.selected { ">" } else { " " };
         let category_kind = format!("{}/{}", row.category, row.kind);
         let access = row.url.as_deref().or(row.access.as_deref()).unwrap_or("-");
-        let text = format!(
-            "{marker} {:<8} {:<8} {:<14} {:<30} {}",
-            row.state, row.plane, category_kind, row.name, access
-        );
+        let text = tui_row_text(marker, row, &category_kind, access);
         queue!(stdout, MoveTo(0, y))?;
         if actual == app.selected {
             queue!(stdout, SetAttribute(Attribute::Reverse))?;
@@ -1744,7 +1808,7 @@ fn draw_tui(stdout: &mut Stdout, app: &TuiApp) -> io::Result<()> {
         queue!(
             stdout,
             SetForegroundColor(color_for_state(&row.state)),
-            Print(fit(&text, width as usize)),
+            Print(fit_window(&text, width, app.scroll_x)),
             ResetColor
         )?;
         if actual == app.selected {
@@ -1753,43 +1817,85 @@ fn draw_tui(stdout: &mut Stdout, app: &TuiApp) -> io::Result<()> {
     }
 
     let base = height.saturating_sub(5);
-    queue!(stdout, MoveTo(0, base), Print(line(width)))?;
+    queue!(stdout, MoveTo(0, base), Print(line(terminal_width)))?;
     if let Some(row) = app.rows.get(app.selected) {
+        let access = row.url.as_deref().or(row.access.as_deref()).unwrap_or("-");
         queue!(
             stdout,
             MoveTo(0, base + 1),
             SetAttribute(Attribute::Bold),
-            Print(fit(&format!("{} ({})", row.name, row.id), width as usize)),
+            Print(fit(&format!("{} ({})", row.name, row.id), width)),
             SetAttribute(Attribute::Reset),
             MoveTo(0, base + 2),
             Print(fit(
                 row.description.as_deref().unwrap_or(&row.detail),
-                width as usize
+                width
             )),
             MoveTo(0, base + 3),
-            Print(fit(
-                &format!(
-                    "detail: {} | ports: {} | controls: {}",
-                    row.detail,
-                    if row.ports.is_empty() {
-                        "none".into()
-                    } else {
-                        row.ports.join(",")
-                    },
-                    if row.controls.is_empty() {
-                        "none".into()
-                    } else {
-                        row.controls.join(",")
-                    }
-                ),
-                width as usize
+            Print(fit_window(
+                &tui_detail_text(row, access),
+                width,
+                app.scroll_x
             )),
             MoveTo(0, base + 4),
-            Print(fit(&app.message, width as usize))
+            Print(fit_window(&app.message, width, app.scroll_x))
         )?;
     }
     stdout.flush()?;
     Ok(())
+}
+
+fn tui_list_capacity(height: u16) -> usize {
+    let list_top = 3u16;
+    let footer_start = height.saturating_sub(5);
+    footer_start.saturating_sub(list_top + 1) as usize
+}
+
+fn visible_rows(app: &TuiApp, available: usize) -> Range<usize> {
+    let end = (app.scroll_y + available).min(app.rows.len());
+    app.scroll_y..end
+}
+
+fn tui_row_text(marker: &str, row: &StatusRow, category_kind: &str, access: &str) -> String {
+    format!(
+        "{marker} {:<8} {:<8} {:<14} {:<30} {}",
+        row.state, row.plane, category_kind, row.name, access
+    )
+}
+
+fn tui_content_width(app: &TuiApp) -> usize {
+    let mut max_width =
+        visible_width("  STATE    PLANE    CATEGORY/KIND  SERVICE                         ACCESS");
+    for row in &app.rows {
+        let category_kind = format!("{}/{}", row.category, row.kind);
+        let access = row.url.as_deref().or(row.access.as_deref()).unwrap_or("-");
+        max_width = max_width.max(visible_width(&tui_row_text(
+            ">",
+            row,
+            &category_kind,
+            access,
+        )));
+        max_width = max_width.max(visible_width(&tui_detail_text(row, access)));
+    }
+    max_width
+}
+
+fn tui_detail_text(row: &StatusRow, access: &str) -> String {
+    format!(
+        "access: {} | detail: {} | ports: {} | controls: {}",
+        access,
+        row.detail,
+        if row.ports.is_empty() {
+            "none".into()
+        } else {
+            row.ports.join(",")
+        },
+        if row.controls.is_empty() {
+            "none".into()
+        } else {
+            row.controls.join(",")
+        }
+    )
 }
 
 fn color_for_state(state: &str) -> Color {
@@ -1818,6 +1924,34 @@ fn fit(value: &str, width: usize) -> String {
         text.push('~');
     }
     format!("{text:<width$}")
+}
+
+fn fit_window(value: &str, width: usize, offset: usize) -> String {
+    if width == 0 {
+        return String::new();
+    }
+
+    let text = value.replace('\n', " ");
+    let chars: Vec<char> = text.chars().collect();
+    let offset = offset.min(chars.len().saturating_sub(1));
+    let mut window: Vec<char> = chars.iter().skip(offset).take(width).copied().collect();
+    let has_left = offset > 0;
+    let has_right = offset + width < chars.len();
+
+    if has_left && !window.is_empty() {
+        window[0] = '<';
+    }
+    if has_right && !window.is_empty() {
+        let last = window.len() - 1;
+        window[last] = '>';
+    }
+
+    let text: String = window.into_iter().collect();
+    format!("{text:<width$}")
+}
+
+fn visible_width(value: &str) -> usize {
+    value.replace('\n', " ").chars().count()
 }
 
 fn trim_output(value: &str, max_chars: usize) -> String {
@@ -2160,6 +2294,61 @@ kind = "noop"
         app.refresh();
         assert!(app.rows.iter().any(|row| row.id == "beta"));
         assert_eq!(app.rows[app.selected].id, "alpha");
+    }
+
+    #[test]
+    fn tui_window_marks_horizontal_overflow() {
+        assert_eq!(fit_window("abcdef", 4, 0), "abc>");
+        assert_eq!(fit_window("abcdef", 4, 1), "<cd>");
+        assert_eq!(fit_window("abc", 5, 0), "abc  ");
+    }
+
+    #[test]
+    fn tui_viewport_keeps_selection_visible_and_clamps_pan() {
+        let ctx = Context {
+            root: PathBuf::new(),
+            manifest: Manifest::default(),
+            env_values: HashMap::new(),
+        };
+        let mut app = TuiApp {
+            ctx,
+            rows: vec![
+                test_status_row("alpha", "https://example.invalid/a"),
+                test_status_row("beta", "https://example.invalid/b"),
+                test_status_row("gamma", "https://example.invalid/very/long/service/link"),
+                test_status_row("delta", "https://example.invalid/d"),
+            ],
+            selected: 3,
+            scroll_x: usize::MAX,
+            scroll_y: 0,
+            message: String::new(),
+            last_refresh: Instant::now(),
+        };
+
+        app.clamp_viewport(2, 24);
+
+        assert_eq!(visible_rows(&app, 2), 2..4);
+        assert!(app.scroll_x > 0);
+        assert!(app.scroll_x <= tui_content_width(&app).saturating_sub(24));
+    }
+
+    fn test_status_row(id: &str, url: &str) -> StatusRow {
+        StatusRow {
+            id: id.into(),
+            name: id.into(),
+            plane: "private".into(),
+            category: "app".into(),
+            kind: "noop".into(),
+            state: "online".into(),
+            detail: "running".into(),
+            url: Some(url.into()),
+            access: None,
+            description: None,
+            ports: Vec::new(),
+            repo: None,
+            controls: Vec::new(),
+            optional: false,
+        }
     }
 
     #[test]
