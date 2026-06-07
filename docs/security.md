@@ -12,8 +12,10 @@ Plugroot is private-first.
 - Plugroot does not run arbitrary commands from the dashboard or TUI.
 - `.env`, local overlays, repos, logs, databases, and service data are ignored.
 - `plugroot audit-public` checks tracked files for ignored private paths,
-  common secret markers, Tailscale-style private IPs, and optional local
-  denylist terms.
+  common secret markers, private key material, Tailscale-style private IPs,
+  and optional local denylist terms.
+- `plugroot audit-public --install-hook` installs local pre-commit and
+  pre-push hooks so the audit runs before commits and pushes.
 - Password-manager services are high-value targets. Keep their databases,
   exports, backup archives, tokens, and real private URLs in ignored local
   files only.

@@ -80,6 +80,8 @@ Real secrets and private state are ignored by default:
 ```text
 .env
 plugroot.local.toml
+*.local.toml
+*.local.json
 repos/
 services/*/data/
 services/*/config/
@@ -89,6 +91,8 @@ backups/
 *.bitwarden-export*
 *.proton-pass-export*
 *.kdbx
+*.pem
+*.key
 *.db
 *.log
 ```
@@ -102,8 +106,16 @@ plugroot audit-public
 gitleaks detect --source . --redact
 ```
 
-For local protection without CI, install the pre-push hook:
+For local protection without CI, install the pre-commit and pre-push hooks:
 
 ```bash
 cargo run -- audit-public --install-hook
+```
+
+For host-specific names, domains, or literal terms that should never appear in
+the public repo, add one term per line to an ignored denylist:
+
+```text
+docs/private/audit-denylist.txt
+.plugroot/audit-denylist.txt
 ```

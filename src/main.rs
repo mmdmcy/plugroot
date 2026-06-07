@@ -297,7 +297,7 @@ IP leaks, and host-specific denylist terms.
 
     if args.iter().any(|arg| arg == "--install-hook") {
         install_audit_hook(root)?;
-        println!("installed .git/hooks/pre-push");
+        println!("installed .git/hooks/pre-commit and .git/hooks/pre-push");
     }
 
     let findings = audit_public(root)?;
@@ -317,26 +317,27 @@ IP leaks, and host-specific denylist terms.
 }
 
 fn install_audit_hook(root: &Path) -> io::Result<()> {
-    let hook = root.join(".git/hooks/pre-push");
-    let parent = hook
-        .parent()
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "missing .git/hooks"))?;
-    fs::create_dir_all(parent)?;
-    fs::write(
-        &hook,
-        r#"#!/bin/sh
+    let hooks = root.join(".git/hooks");
+    fs::create_dir_all(&hooks)?;
+    for name in ["pre-commit", "pre-push"] {
+        let hook = hooks.join(name);
+        fs::write(
+            &hook,
+            r#"#!/bin/sh
 set -eu
 repo_root=$(git rev-parse --show-toplevel)
 cd "$repo_root"
 cargo run --quiet -- audit-public
 "#,
-    )?;
-    ensure_success(run_command(
-        "chmod",
-        &["0755".into(), hook.display().to_string()],
-        None,
-        &[],
-    ))
+        )?;
+        ensure_success(run_command(
+            "chmod",
+            &["0755".into(), hook.display().to_string()],
+            None,
+            &[],
+        ))?;
+    }
+    Ok(())
 }
 
 fn audit_public(root: &Path) -> io::Result<Vec<AuditFinding>> {
