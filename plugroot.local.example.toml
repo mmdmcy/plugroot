@@ -1,4 +1,5 @@
-# Copy to plugroot.local.toml for one machine. Keep the copy out of Git.
+# Copy to $PLUGROOT_STATE_ROOT/plugroot.local.toml for one machine.
+# Keep the real local overlay outside Git checkouts.
 
 [host]
 name = "example-host"

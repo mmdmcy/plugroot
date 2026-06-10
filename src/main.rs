@@ -4,7 +4,7 @@ use std::fs;
 use std::io::{self, Read, Stdout, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
 use std::ops::Range;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::process::{Command, ExitCode};
 use std::time::{Duration, Instant};
 
@@ -42,6 +42,7 @@ fn run() -> io::Result<u8> {
 
     let ctx = Context::load(root)?;
     match command {
+        "boundary" => cmd_boundary(&ctx, &args[1..]),
         "status" => cmd_status(&ctx, &args[1..]),
         "apply" => cmd_apply(&ctx, &args[1..]),
         "repos" => cmd_repos(&ctx, &args[1..]),
@@ -103,12 +104,13 @@ Usage:
   plugroot [--root <path>] up|down|restart|logs <service|all>
   plugroot [--root <path>] tui [--once]
   plugroot [--root <path>] web [--bind <addr:port>]
+  plugroot [--root <path>] boundary [--strict]
   plugroot [--root <path>] audit-public [--install-hook]
 
 Files:
-  plugroot.toml        public manifest
-  plugroot.local.toml  ignored local overlay
-  .env                ignored local values
+  plugroot.toml                         public manifest in the code root
+  $PLUGROOT_STATE_ROOT/.env             private local values
+  $PLUGROOT_STATE_ROOT/plugroot.local.toml  private local overlay
 "#
     );
 }
@@ -122,20 +124,29 @@ struct Context {
 
 impl Context {
     fn load(root: PathBuf) -> io::Result<Self> {
-        let env_values = load_env_file(&root.join(".env"))?;
         let mut merged_env: HashMap<String, String> = env::vars().collect();
-        for (key, value) in env_values {
+
+        for (key, value) in load_env_file(&root.join(".env"))? {
             merged_env.insert(key, value);
         }
 
-        let main = load_manifest_file(&root.join("plugroot.toml"), &merged_env)?;
-        let local_path = root.join("plugroot.local.toml");
-        let manifest = if local_path.exists() {
-            let local = load_manifest_file(&local_path, &merged_env)?;
-            merge_manifest(main, local)
-        } else {
-            main
-        };
+        let main_path = root.join("plugroot.toml");
+        let mut manifest = load_manifest_file(&main_path, &merged_env)?;
+        let state_root = state_root_for_manifest(&root, &manifest);
+        for (key, value) in load_env_file(&state_root.join(".env"))? {
+            merged_env.insert(key, value);
+        }
+
+        manifest = load_manifest_file(&main_path, &merged_env)?;
+        let state_root = state_root_for_manifest(&root, &manifest);
+        let code_local_path = root.join("plugroot.local.toml");
+        let state_local_path = state_root.join("plugroot.local.toml");
+        for local_path in [&code_local_path, &state_local_path] {
+            if local_path.exists() {
+                let local = load_manifest_file(local_path, &merged_env)?;
+                manifest = merge_manifest(manifest, local);
+            }
+        }
 
         Ok(Self {
             root,
@@ -170,6 +181,18 @@ impl Context {
             self.service(target).into_iter().collect()
         }
     }
+
+    fn state_root(&self) -> PathBuf {
+        state_root_for_manifest(&self.root, &self.manifest)
+    }
+
+    fn repo_dir(&self) -> Option<PathBuf> {
+        self.manifest
+            .plugroot
+            .as_ref()
+            .and_then(|config| config.repo_dir.as_deref())
+            .map(|path| resolve_path(&self.root, path))
+    }
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -188,7 +211,9 @@ struct Manifest {
 
 #[derive(Clone, Debug, Default, Deserialize)]
 struct PlugrootConfig {
+    code_root: Option<String>,
     root: Option<String>,
+    state_root: Option<String>,
     repo_dir: Option<String>,
 }
 
@@ -281,6 +306,115 @@ struct AuditFinding {
     message: String,
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum BoundarySeverity {
+    Error,
+    Warning,
+}
+
+impl BoundarySeverity {
+    fn label(&self) -> &'static str {
+        match self {
+            Self::Error => "error",
+            Self::Warning => "warning",
+        }
+    }
+}
+
+#[derive(Debug)]
+struct BoundaryFinding {
+    severity: BoundarySeverity,
+    path: Option<PathBuf>,
+    message: String,
+}
+
+impl BoundaryFinding {
+    fn error(path: Option<PathBuf>, message: impl Into<String>) -> Self {
+        Self {
+            severity: BoundarySeverity::Error,
+            path,
+            message: message.into(),
+        }
+    }
+
+    fn warning(path: Option<PathBuf>, message: impl Into<String>) -> Self {
+        Self {
+            severity: BoundarySeverity::Warning,
+            path,
+            message: message.into(),
+        }
+    }
+}
+
+fn cmd_boundary(ctx: &Context, args: &[String]) -> io::Result<u8> {
+    let mut strict = false;
+    for arg in args {
+        match arg.as_str() {
+            "-h" | "--help" => {
+                println!(
+                    r#"Usage:
+  plugroot boundary
+  plugroot boundary --strict
+
+Checks that the code root is code-only and private state lives outside the
+Git checkout. Errors always fail. --strict also fails on warnings.
+"#
+                );
+                return Ok(0);
+            }
+            "--strict" => strict = true,
+            _ => {
+                eprintln!("usage: plugroot boundary [--strict]");
+                return Ok(2);
+            }
+        }
+    }
+
+    let findings = boundary_findings(ctx)?;
+    let code_root = clean_path(&ctx.root);
+    let state_root = clean_path(&ctx.state_root());
+    let repo_dir = ctx.repo_dir().map(|path| clean_path(&path));
+
+    if findings.is_empty() {
+        println!("code root: {}", code_root.display());
+        println!("state root: {}", state_root.display());
+        if let Some(repo_dir) = &repo_dir {
+            println!("repo dir: {}", repo_dir.display());
+        }
+        println!("boundary: ok");
+        return Ok(0);
+    }
+
+    let errors = findings
+        .iter()
+        .filter(|finding| finding.severity == BoundarySeverity::Error)
+        .count();
+    let warnings = findings.len().saturating_sub(errors);
+    eprintln!("code root: {}", code_root.display());
+    eprintln!("state root: {}", state_root.display());
+    if let Some(repo_dir) = &repo_dir {
+        eprintln!("repo dir: {}", repo_dir.display());
+    }
+    eprintln!("boundary: found {errors} error(s), {warnings} warning(s)");
+    for finding in &findings {
+        match &finding.path {
+            Some(path) => eprintln!(
+                "{}: {}: {}",
+                finding.severity.label(),
+                path.display(),
+                finding.message
+            ),
+            None => eprintln!("{}: {}", finding.severity.label(), finding.message),
+        }
+    }
+
+    if errors > 0 || (strict && warnings > 0) {
+        Ok(1)
+    } else {
+        Ok(0)
+    }
+}
+
 fn cmd_audit_public(root: &Path, args: &[String]) -> io::Result<u8> {
     if args.iter().any(|arg| arg == "-h" || arg == "--help") {
         println!(
@@ -328,6 +462,7 @@ set -eu
 repo_root=$(git rev-parse --show-toplevel)
 cd "$repo_root"
 cargo run --quiet -- audit-public
+test -f plugroot.toml && cargo run --quiet -- boundary --strict
 "#,
         )?;
         ensure_success(run_command(
@@ -338,6 +473,153 @@ cargo run --quiet -- audit-public
         ))?;
     }
     Ok(())
+}
+
+fn boundary_findings(ctx: &Context) -> io::Result<Vec<BoundaryFinding>> {
+    let mut findings = Vec::new();
+    let code_root = clean_path(&ctx.root);
+    let state_root = clean_path(&ctx.state_root());
+
+    match &ctx.manifest.plugroot {
+        Some(config) => {
+            if let Some(code_root_value) = &config.code_root {
+                let configured = clean_path(&resolve_path(&ctx.root, code_root_value));
+                if configured != code_root {
+                    findings.push(BoundaryFinding::warning(
+                        Some(configured),
+                        "configured code_root differs from the active --root checkout",
+                    ));
+                }
+            }
+            if config.state_root.is_none() {
+                if config.root.is_some() {
+                    findings.push(BoundaryFinding::warning(
+                        None,
+                        "plugroot.root is legacy; use plugroot.state_root for private machine state",
+                    ));
+                } else {
+                    findings.push(BoundaryFinding::warning(
+                        None,
+                        "plugroot.state_root is not configured; private state falls back to the code root",
+                    ));
+                }
+            }
+        }
+        None => findings.push(BoundaryFinding::warning(
+            None,
+            "missing [plugroot] section; private state falls back to the code root",
+        )),
+    }
+
+    if same_or_inside(&code_root, &state_root) {
+        findings.push(BoundaryFinding::error(
+            Some(state_root.clone()),
+            "state root must live outside the code checkout",
+        ));
+    }
+
+    if let Some(repo_dir) = ctx.repo_dir() {
+        let repo_dir = clean_path(&repo_dir);
+        if same_or_inside(&code_root, &repo_dir) {
+            findings.push(BoundaryFinding::error(
+                Some(repo_dir.clone()),
+                "repo_dir must live outside the Plugroot code checkout",
+            ));
+        }
+        if let Some(git_root) = nearest_git_root(&repo_dir) {
+            if same_or_inside(&git_root, &repo_dir) {
+                findings.push(BoundaryFinding::error(
+                    Some(repo_dir),
+                    "repo_dir is inside a Git checkout; keep cloned app repos in private state",
+                ));
+            }
+        }
+    }
+
+    if let Some(git_root) = nearest_git_root(&state_root) {
+        if same_or_inside(&git_root, &state_root) {
+            findings.push(BoundaryFinding::error(
+                Some(state_root.clone()),
+                "state root is inside a Git checkout",
+            ));
+        }
+    }
+
+    for rel in [
+        ".env",
+        "plugroot.local.toml",
+        ".plugroot",
+        "repos",
+        "data",
+        "media",
+        "backups",
+    ] {
+        let path = ctx.root.join(rel);
+        if path.exists() {
+            findings.push(BoundaryFinding::error(
+                Some(path),
+                "private runtime path exists inside the code checkout",
+            ));
+        }
+    }
+
+    for path in service_private_paths(&ctx.root) {
+        findings.push(BoundaryFinding::error(
+            Some(path),
+            "private service state exists inside the code checkout",
+        ));
+    }
+
+    match audit_public(&ctx.root) {
+        Ok(audit_findings) => {
+            for finding in audit_findings {
+                let path = ctx.root.join(&finding.path);
+                let message = match finding.line {
+                    Some(line) => format!("public audit issue at line {line}: {}", finding.message),
+                    None => format!("public audit issue: {}", finding.message),
+                };
+                findings.push(BoundaryFinding::error(Some(path), message));
+            }
+        }
+        Err(err) => findings.push(BoundaryFinding::warning(
+            Some(ctx.root.clone()),
+            format!("could not run public audit: {err}"),
+        )),
+    }
+
+    if nearest_git_root(&ctx.root).is_none() {
+        findings.push(BoundaryFinding::warning(
+            Some(ctx.root.clone()),
+            "code root is not inside a Git checkout; tracked-file auditing is limited",
+        ));
+    }
+
+    Ok(findings)
+}
+
+fn service_private_paths(code_root: &Path) -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+    let services = code_root.join("services");
+    let Ok(entries) = fs::read_dir(services) else {
+        return paths;
+    };
+
+    for entry in entries.flatten() {
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        if !file_type.is_dir() {
+            continue;
+        }
+        for name in [".env", "data", "cache", "config", "secrets"] {
+            let path = entry.path().join(name);
+            if path.exists() {
+                paths.push(path);
+            }
+        }
+    }
+
+    paths
 }
 
 fn audit_public(root: &Path) -> io::Result<Vec<AuditFinding>> {
@@ -440,6 +722,8 @@ fn load_audit_denylist(root: &Path) -> Vec<String> {
         root.join("docs/private/audit-denylist.txt"),
         root.join(".plugroot/audit-denylist.txt"),
     ];
+    let state_root = env::var("PLUGROOT_STATE_ROOT").unwrap_or_else(|_| "/var/lib/plugroot".into());
+    paths.push(PathBuf::from(state_root).join(".plugroot/audit-denylist.txt"));
     if let Ok(path) = env::var("PLUGROOT_AUDIT_DENYLIST") {
         paths.push(PathBuf::from(path));
     }
@@ -882,12 +1166,12 @@ fn port_status(host: &str, port: u16) -> (String, String) {
 
 fn cmd_apply(ctx: &Context, args: &[String]) -> io::Result<u8> {
     let dry_run = args.iter().any(|arg| arg == "--dry-run");
-    let generated_root = ctx.root.join(".plugroot/generated");
-    if let Some(config) = &ctx.manifest.plugroot {
-        let runtime_root = config.root.as_deref().unwrap_or("-");
-        let repo_dir = config.repo_dir.as_deref().unwrap_or("-");
-        println!("runtime root: {runtime_root}");
-        println!("repo dir: {repo_dir}");
+    let state_root = ctx.state_root();
+    let generated_root = state_root.join(".plugroot/generated");
+    println!("code root: {}", ctx.root.display());
+    println!("state root: {}", state_root.display());
+    if let Some(repo_dir) = ctx.repo_dir() {
+        println!("repo dir: {}", repo_dir.display());
     }
     if dry_run {
         println!("dry run: no files or services will be changed");
@@ -1281,6 +1565,10 @@ fn compose_args(ctx: &Context, service: &Service) -> Option<Vec<String>> {
         .as_deref()
         .map(|path| resolve_path(&ctx.root, path))
         .or_else(|| {
+            let path = ctx.state_root().join(".env");
+            path.exists().then_some(path)
+        })
+        .or_else(|| {
             let path = ctx.root.join(".env");
             path.exists().then_some(path)
         });
@@ -1438,6 +1726,53 @@ fn resolve_path(root: &Path, value: &str) -> PathBuf {
         path
     } else {
         root.join(path)
+    }
+}
+
+fn state_root_for_manifest(code_root: &Path, manifest: &Manifest) -> PathBuf {
+    manifest
+        .plugroot
+        .as_ref()
+        .and_then(|config| config.state_root.as_deref().or(config.root.as_deref()))
+        .map(|path| resolve_path(code_root, path))
+        .unwrap_or_else(|| code_root.to_path_buf())
+}
+
+fn clean_path(path: &Path) -> PathBuf {
+    let mut clean = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                clean.pop();
+            }
+            Component::Normal(part) => clean.push(part),
+            Component::RootDir | Component::Prefix(_) => clean.push(component.as_os_str()),
+        }
+    }
+    clean
+}
+
+fn same_or_inside(parent: &Path, child: &Path) -> bool {
+    let parent = clean_path(parent);
+    let child = clean_path(child);
+    child == parent || child.starts_with(parent)
+}
+
+fn nearest_git_root(path: &Path) -> Option<PathBuf> {
+    let mut current = if path.is_dir() {
+        path.to_path_buf()
+    } else {
+        path.parent().unwrap_or(path).to_path_buf()
+    };
+
+    loop {
+        if current.join(".git").exists() {
+            return Some(clean_path(&current));
+        }
+        if !current.pop() {
+            return None;
+        }
     }
 }
 
@@ -2208,6 +2543,7 @@ mod tests {
         let raw = r#"
 [plugroot]
 root = "/opt/plugroot"
+state_root = "/var/lib/plugroot"
 
 [[repo]]
 id = "example"
@@ -2222,8 +2558,89 @@ host = "127.0.0.1"
 port = 9
 "#;
         let parsed: Manifest = toml::from_str(raw).unwrap();
+        assert_eq!(
+            parsed.plugroot.as_ref().unwrap().state_root.as_deref(),
+            Some("/var/lib/plugroot")
+        );
         assert_eq!(parsed.repo.len(), 1);
         assert_eq!(parsed.service[0].id, "example");
+    }
+
+    #[test]
+    fn state_root_prefers_state_root_over_legacy_root() {
+        let manifest = Manifest {
+            plugroot: Some(PlugrootConfig {
+                code_root: None,
+                root: Some("/legacy".into()),
+                state_root: Some("/private-state".into()),
+                repo_dir: None,
+            }),
+            ..Manifest::default()
+        };
+
+        assert_eq!(
+            state_root_for_manifest(Path::new("/code"), &manifest),
+            PathBuf::from("/private-state")
+        );
+    }
+
+    #[test]
+    fn context_loads_state_root_overlay() {
+        let code = tempfile::tempdir().unwrap();
+        let state = tempfile::tempdir().unwrap();
+        fs::write(
+            code.path().join("plugroot.toml"),
+            format!(
+                r#"
+[plugroot]
+state_root = "{}"
+
+[[service]]
+id = "alpha"
+name = "Alpha"
+kind = "noop"
+"#,
+                state.path().display()
+            ),
+        )
+        .unwrap();
+        fs::write(
+            state.path().join("plugroot.local.toml"),
+            r#"
+[[service]]
+id = "beta"
+name = "Beta"
+kind = "noop"
+"#,
+        )
+        .unwrap();
+
+        let ctx = Context::load(code.path().to_path_buf()).unwrap();
+
+        assert!(ctx.service("alpha").is_some());
+        assert!(ctx.service("beta").is_some());
+    }
+
+    #[test]
+    fn boundary_rejects_state_root_inside_code_checkout() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir(dir.path().join(".git")).unwrap();
+        fs::write(
+            dir.path().join("plugroot.toml"),
+            r#"
+[plugroot]
+state_root = "state"
+"#,
+        )
+        .unwrap();
+        let ctx = Context::load(dir.path().to_path_buf()).unwrap();
+
+        let findings = boundary_findings(&ctx).unwrap();
+
+        assert!(findings
+            .iter()
+            .any(|finding| finding.severity == BoundarySeverity::Error
+                && finding.message.contains("state root")));
     }
 
     #[test]

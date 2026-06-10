@@ -1,6 +1,6 @@
 [plugroot]
-root = "${PLUGROOT_ROOT:-/opt/plugroot}"
-repo_dir = "${PLUGROOT_REPO_DIR:-/opt/plugroot/repos}"
+state_root = "${PLUGROOT_STATE_ROOT:-/var/lib/plugroot}"
+repo_dir = "${PLUGROOT_REPO_DIR:-/var/lib/plugroot/repos}"
 
 [host]
 name = "${PLUGROOT_HOSTNAME:-plugroot-host}"

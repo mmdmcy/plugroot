@@ -7,11 +7,25 @@ from Rust.
 
 ```text
 plugroot.toml
-plugroot.local.toml
-.env
+$PLUGROOT_STATE_ROOT/plugroot.local.toml
+$PLUGROOT_STATE_ROOT/.env
 ```
 
-`plugroot.toml` is safe to commit. `plugroot.local.toml` and `.env` are ignored.
+`plugroot.toml` is safe to commit. Real local overlays and `.env` files belong
+under the private state root, not in the Git checkout. Code-root
+`plugroot.local.toml` and `.env` files are still read for old installs, but
+`plugroot boundary --strict` flags them.
+
+## Plugroot Section
+
+```toml
+[plugroot]
+state_root = "${PLUGROOT_STATE_ROOT:-/var/lib/plugroot}"
+repo_dir = "${PLUGROOT_REPO_DIR:-/var/lib/plugroot/repos}"
+```
+
+`state_root` is local-only machine state. `repo_dir` is where Plugroot-managed
+app repos are cloned. Both should be outside the Plugroot code checkout.
 
 ## Repos
 
@@ -19,7 +33,7 @@ plugroot.local.toml
 [[repo]]
 id = "example-app"
 url = "https://github.com/example/example-app.git"
-path = "${PLUGROOT_REPO_DIR:-/opt/plugroot/repos}/example-app"
+path = "${PLUGROOT_REPO_DIR:-/var/lib/plugroot/repos}/example-app"
 ref = "main"
 ```
 
@@ -31,7 +45,7 @@ ref = "main"
 
 ```toml
 [[directory]]
-path = "/opt/plugroot/services/example/data"
+path = "${PLUGROOT_STATE_ROOT:-/var/lib/plugroot}/services/example/data"
 owner = "plugroot:plugroot"
 mode = "0755"
 
@@ -41,7 +55,7 @@ target = "/etc/systemd/system/example.service"
 mode = "0644"
 ```
 
-Use ignored local overlays for host-specific files and paths.
+Use state-root local overlays for host-specific files and paths.
 
 ## Services
 
@@ -63,11 +77,11 @@ controls = ["start", "stop", "restart", "logs"]
 
 If a control is absent, the CLI, TUI, and web dashboard refuse that action.
 
-Compose services use the root `.env` automatically when it exists. A service can
-override that with:
+Compose services use the state-root `.env` automatically when it exists. A
+service can override that with:
 
 ```toml
-env_file = "services/example/.env"
+env_file = "${PLUGROOT_STATE_ROOT:-/var/lib/plugroot}/services/example/.env"
 ```
 
 ## Generated Units
@@ -78,7 +92,7 @@ A `systemd` or `user-systemd` service with `command` can generate a unit:
 kind = "user-systemd"
 unit = "example-app.service"
 user = "${PLUGROOT_USER:-plugroot}"
-working_dir = "${PLUGROOT_REPO_DIR:-/opt/plugroot/repos}/example-app"
+working_dir = "${PLUGROOT_REPO_DIR:-/var/lib/plugroot/repos}/example-app"
 command = ["/usr/bin/python3", "server.py"]
 ```
 
