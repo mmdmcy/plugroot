@@ -21,8 +21,8 @@ plugroot doctor
 plugroot release-check
 plugroot tui
 plugroot apply --dry-run
-plugroot up plugdeck
-plugroot logs plugdeck
+plugroot up example-web
+plugroot logs example-web
 ```
 
 Avoid adding separate dash-named host commands such as `plugroot-tui`. They make

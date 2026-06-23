@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::env;
 use std::fs;
 use std::io::{self, Read, Stdout, Write};
@@ -3685,34 +3685,85 @@ fn http_response(
 
 fn render_web(ctx: &Context) -> String {
     let rows = status_rows(ctx);
-    let mut cards = String::new();
-    for row in rows {
-        let repo = row.repo.as_deref().unwrap_or("-");
-        let actions = row
-            .controls
-            .iter()
-            .map(|action| {
+    let total = rows.len();
+    let online = rows.iter().filter(|row| row.state == "online").count();
+    let attention = rows.iter().filter(|row| web_needs_attention(row)).count();
+    let optional_idle = rows
+        .iter()
+        .filter(|row| row.optional && row.state != "online" && !web_needs_attention(row))
+        .count();
+    let planes = rows
+        .iter()
+        .map(|row| row.plane.as_str())
+        .collect::<HashSet<_>>()
+        .len();
+    let categories = rows
+        .iter()
+        .filter(|row| row.category != "-")
+        .map(|row| row.category.as_str())
+        .collect::<HashSet<_>>()
+        .len();
+
+    let host_name = ctx
+        .manifest
+        .host
+        .as_ref()
+        .and_then(|host| host.name.as_deref())
+        .unwrap_or("plugroot-host");
+    let private_ip = ctx
+        .manifest
+        .host
+        .as_ref()
+        .and_then(|host| host.private_ip.as_deref())
+        .unwrap_or("127.0.0.1");
+    let state_root = clean_path(&ctx.state_root()).display().to_string();
+
+    let mut grouped: BTreeMap<(String, String), Vec<&StatusRow>> = BTreeMap::new();
+    for row in &rows {
+        grouped
+            .entry((row.plane.clone(), web_category_label(row)))
+            .or_default()
+            .push(row);
+    }
+
+    let groups = if grouped.is_empty() {
+        r#"<section class="empty"><h2>No Services</h2><p>Add service entries to plugroot.toml or the private overlay to populate this overview.</p></section>"#
+            .into()
+    } else {
+        grouped
+            .into_iter()
+            .map(|((plane, category), mut group_rows)| {
+                group_rows.sort_by(|left, right| {
+                    web_needs_attention(right)
+                        .cmp(&web_needs_attention(left))
+                        .then_with(|| left.name.cmp(&right.name))
+                });
+                let cards = group_rows
+                    .iter()
+                    .map(|row| render_web_service(row))
+                    .collect::<Vec<_>>()
+                    .join("");
+                let group_online = group_rows
+                    .iter()
+                    .filter(|row| row.state == "online")
+                    .count();
+                let group_attention = group_rows
+                    .iter()
+                    .filter(|row| web_needs_attention(row))
+                    .count();
                 format!(
-                    r#"<form method="post" action="/api/action/{}/{}"><button>{}</button></form>"#,
-                    html_escape(&row.id),
-                    html_escape(action),
-                    html_escape(action)
+                    r#"<section class="group"><div class="group-head"><div><span class="eyebrow">{}</span><h2>{}</h2></div><p>{} service(s), {} online, {} attention</p></div><div class="grid">{}</div></section>"#,
+                    html_escape(&plane),
+                    html_escape(&category),
+                    group_rows.len(),
+                    group_online,
+                    group_attention,
+                    cards
                 )
             })
             .collect::<Vec<_>>()
-            .join("");
-        cards.push_str(&format!(
-            r#"<section class="svc"><div><strong>{}</strong><span>{} / {}</span></div><p class="{}">{}</p><p>{}</p><p class="muted">repo: {}</p><div class="actions">{}</div></section>"#,
-            html_escape(&row.name),
-            html_escape(&row.plane),
-            html_escape(&row.kind),
-            html_escape(&row.state),
-            html_escape(&row.state),
-            html_escape(&row.detail),
-            html_escape(repo),
-            if actions.is_empty() { "<span class=\"muted\">No controls</span>".into() } else { actions },
-        ));
-    }
+            .join("")
+    };
 
     format!(
         r#"<!doctype html>
@@ -3722,22 +3773,189 @@ fn render_web(ctx: &Context) -> String {
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Plugroot</title>
 <style>
-body{{margin:0;font:14px system-ui,sans-serif;background:#111;color:#eee}}
-header{{display:flex;justify-content:space-between;align-items:center;padding:16px 20px;border-bottom:1px solid #333}}
-main{{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:12px;padding:16px}}
-.svc{{border:1px solid #333;border-radius:6px;padding:12px;background:#181818}}
-.svc div:first-child{{display:flex;justify-content:space-between;gap:10px}}
-.svc span,.muted{{color:#aaa}}
-.online{{color:#62d36f}}.offline,.missing{{color:#ff716f}}.unknown,.partial{{color:#ffd166}}
-.actions{{display:flex;gap:8px;flex-wrap:wrap}}button{{background:#242424;color:#eee;border:1px solid #555;border-radius:4px;padding:5px 9px;cursor:pointer}}
+:root{{color-scheme:dark;--bg:#101113;--panel:#181a1d;--panel-2:#202327;--line:#30343a;--text:#f3f1eb;--muted:#a9adb4;--ok:#7acb7a;--warn:#e1b65d;--bad:#ef767a;--info:#70a7d9}}
+*{{box-sizing:border-box}}
+body{{margin:0;font:14px system-ui,sans-serif;background:var(--bg);color:var(--text);letter-spacing:0}}
+a{{color:inherit}}
+header{{display:flex;justify-content:space-between;align-items:center;gap:16px;padding:20px 24px;border-bottom:1px solid var(--line);background:#15171a}}
+h1,h2,h3,p{{margin:0}}
+h1{{font-size:24px;line-height:1.1}}
+h2{{font-size:18px;line-height:1.2}}
+h3{{font-size:16px;line-height:1.25}}
+main{{padding:20px 24px 28px}}
+.toplink{{color:var(--muted);text-decoration:none;border:1px solid var(--line);border-radius:6px;padding:7px 10px;background:var(--panel)}}
+.hero{{display:grid;grid-template-columns:minmax(0,1.2fr) minmax(320px,.8fr);gap:16px;margin-bottom:22px}}
+.hero-main{{padding:18px;border:1px solid var(--line);border-radius:8px;background:var(--panel)}}
+.hero-main p{{margin-top:8px;color:var(--muted);line-height:1.45}}
+.facts{{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}}
+.fact{{min-height:74px;padding:12px;border:1px solid var(--line);border-radius:8px;background:var(--panel-2)}}
+.fact strong{{display:block;font-size:24px;line-height:1.1}}
+.fact span{{display:block;margin-top:6px;color:var(--muted)}}
+.meta{{display:flex;gap:8px;flex-wrap:wrap;margin-top:14px}}
+.chip{{display:inline-flex;align-items:center;min-height:26px;border:1px solid var(--line);border-radius:6px;padding:4px 8px;color:var(--muted);background:#141619;max-width:100%;overflow-wrap:anywhere}}
+.group{{margin-top:18px}}
+.group-head{{display:flex;justify-content:space-between;gap:16px;align-items:flex-end;margin-bottom:10px}}
+.group-head p,.eyebrow{{color:var(--muted)}}
+.eyebrow{{display:block;margin-bottom:4px;text-transform:uppercase;font-size:11px;letter-spacing:.08em}}
+.grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(290px,1fr));gap:12px}}
+.svc{{display:flex;flex-direction:column;gap:12px;min-height:250px;border:1px solid var(--line);border-radius:8px;padding:14px;background:var(--panel)}}
+.svc-head{{display:flex;justify-content:space-between;gap:12px;align-items:flex-start}}
+.svc-title{{min-width:0}}
+.svc-title p{{margin-top:5px;color:var(--muted);font-size:13px;overflow-wrap:anywhere}}
+.state{{flex:0 0 auto;border:1px solid currentColor;border-radius:6px;padding:4px 7px;font-size:12px;text-transform:uppercase}}
+.state-online{{color:var(--ok)}}.state-attention{{color:var(--bad)}}.state-idle{{color:var(--muted)}}.state-unknown{{color:var(--warn)}}
+.detail{{line-height:1.45;color:#d4d6da;overflow-wrap:anywhere}}
+.desc{{color:var(--muted);line-height:1.45}}
+.svc-meta{{display:flex;gap:7px;flex-wrap:wrap;margin-top:auto}}
+.actions{{display:flex;gap:8px;flex-wrap:wrap;align-items:center}}
+button,.launch{{display:inline-flex;align-items:center;min-height:30px;background:#23272d;color:var(--text);border:1px solid #4a515b;border-radius:6px;padding:6px 10px;cursor:pointer;text-decoration:none;font:inherit}}
+.launch{{background:#243141;border-color:#3e536d}}
+.disabled{{color:var(--muted);cursor:default}}
+.empty{{border:1px solid var(--line);border-radius:8px;padding:20px;background:var(--panel)}}
+.empty p{{margin-top:8px;color:var(--muted)}}
+@media (max-width:760px){{header,.group-head{{align-items:flex-start;flex-direction:column}}main{{padding:16px}}.hero{{grid-template-columns:1fr}}.facts{{grid-template-columns:1fr 1fr}}}}
+@media (max-width:430px){{.facts{{grid-template-columns:1fr}}.svc-head{{flex-direction:column}}}}
 </style>
 </head>
 <body>
-<header><h1>Plugroot</h1><a href="/api/status">status json</a></header>
-<main>{cards}</main>
+<header><h1>Plugroot</h1><a class="toplink" href="/api/status">status json</a></header>
+<main>
+<section class="hero">
+  <div class="hero-main">
+    <h2>Service Harness Overview</h2>
+    <p>{} is supervising {} declared service(s) across {} plane(s) and {} category group(s). Non-optional offline or missing services are counted as attention.</p>
+    <div class="meta">
+      <span class="chip">host {}</span>
+      <span class="chip">private {}</span>
+      <span class="chip">state {}</span>
+    </div>
+  </div>
+  <div class="facts">
+    <div class="fact"><strong>{}</strong><span>services</span></div>
+    <div class="fact"><strong>{}</strong><span>online</span></div>
+    <div class="fact"><strong>{}</strong><span>attention</span></div>
+    <div class="fact"><strong>{}</strong><span>optional idle</span></div>
+  </div>
+</section>
+{}
+</main>
 </body>
-</html>"#
+</html>"#,
+        html_escape(host_name),
+        total,
+        planes,
+        categories,
+        html_escape(host_name),
+        html_escape(private_ip),
+        html_escape(&state_root),
+        total,
+        online,
+        attention,
+        optional_idle,
+        groups
     )
+}
+
+fn render_web_service(row: &StatusRow) -> String {
+    let actions = row
+        .controls
+        .iter()
+        .map(|action| {
+            format!(
+                r#"<form method="post" action="/api/action/{}/{}"><button>{}</button></form>"#,
+                html_escape(&row.id),
+                html_escape(action),
+                html_escape(action)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("");
+    let action_html = if actions.is_empty() {
+        r#"<span class="chip disabled">No controls</span>"#.into()
+    } else {
+        actions
+    };
+    let launch = row
+        .url
+        .as_deref()
+        .map(|url| format!(r#"<a class="launch" href="{}">open</a>"#, html_escape(url)))
+        .unwrap_or_else(|| r#"<span class="chip disabled">No URL</span>"#.into());
+    let description = row
+        .description
+        .as_deref()
+        .map(|description| format!(r#"<p class="desc">{}</p>"#, html_escape(description)))
+        .unwrap_or_default();
+    let ports = if row.ports.is_empty() {
+        String::new()
+    } else {
+        format!(
+            r#"<span class="chip">{}</span>"#,
+            html_escape(&row.ports.join(", "))
+        )
+    };
+    let repo = row
+        .repo
+        .as_deref()
+        .map(|repo| format!(r#"<span class="chip">repo {}</span>"#, html_escape(repo)))
+        .unwrap_or_default();
+    let access = row
+        .access
+        .as_deref()
+        .map(|access| {
+            format!(
+                r#"<span class="chip">access {}</span>"#,
+                html_escape(access)
+            )
+        })
+        .unwrap_or_default();
+    let optional = if row.optional {
+        r#"<span class="chip">optional</span>"#
+    } else {
+        ""
+    };
+
+    format!(
+        r#"<article class="svc"><div class="svc-head"><div class="svc-title"><h3>{}</h3><p>{} / {} / {}</p></div><span class="state {}">{}</span></div><p class="detail">{}</p>{}<div class="svc-meta"><span class="chip">id {}</span>{}{}{}{}</div><div class="actions">{}{}</div></article>"#,
+        html_escape(&row.name),
+        html_escape(&row.plane),
+        html_escape(&web_category_label(row)),
+        html_escape(&row.kind),
+        web_state_class(row),
+        html_escape(&row.state),
+        html_escape(&row.detail),
+        description,
+        html_escape(&row.id),
+        repo,
+        access,
+        ports,
+        optional,
+        launch,
+        action_html
+    )
+}
+
+fn web_category_label(row: &StatusRow) -> String {
+    if row.category == "-" {
+        "uncategorized".into()
+    } else {
+        row.category.clone()
+    }
+}
+
+fn web_needs_attention(row: &StatusRow) -> bool {
+    row.state != "online" && !(row.optional && matches!(row.state.as_str(), "offline" | "missing"))
+}
+
+fn web_state_class(row: &StatusRow) -> &'static str {
+    if row.state == "online" {
+        "state-online"
+    } else if !web_needs_attention(row) {
+        "state-idle"
+    } else if matches!(row.state.as_str(), "offline" | "missing") {
+        "state-attention"
+    } else {
+        "state-unknown"
+    }
 }
 
 fn html_escape(value: &str) -> String {
