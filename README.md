@@ -19,16 +19,18 @@ private network. Do not expose private control surfaces to the public internet.
 
 ```bash
 cargo run -- status
+cargo run -- doctor
 cargo run -- boundary --strict
 cargo run -- apply --dry-run
 cargo run -- tui
 ```
 
-On an installed host, Plugroot can install a short TUI launcher:
+On an installed host, Plugroot can install a `plugroot` launcher:
 
 ```bash
 sudo /opt/plugroot/bin/plugroot --root /opt/plugroot apply
-plugroot-tui
+plugroot doctor
+plugroot tui
 ```
 
 For a real host, keep private values outside the checkout:
@@ -66,10 +68,11 @@ plugroot status [--json]
 plugroot list
 plugroot apply [--dry-run]
 plugroot repos sync
+plugroot doctor [--json] [--strict]
+plugroot release-check
 plugroot up|down|restart|logs <service|all>
 plugroot tui [--once]
 plugroot web [--bind <addr:port>]
-plugroot-tui
 plugroot boundary [--strict]
 plugroot audit-public [--install-hook]
 ```
@@ -78,6 +81,7 @@ plugroot audit-public [--install-hook]
 
 - Neutral Compose stack bound to `PLUGROOT_PRIVATE_IP`.
 - Git checkout and systemd examples in `docs/manifest.md`.
+- Operator command conventions and health checks in `docs/operations.md`.
 - Plugroot Web as a local private dashboard.
 - Optional Plugroot Web Basic auth through `PLUGROOT_WEB_USER` and
   `PLUGROOT_WEB_PASSWORD`.
@@ -121,6 +125,7 @@ cargo fmt --check
 cargo test
 plugroot audit-public
 plugroot boundary --strict
+plugroot release-check
 gitleaks detect --source . --redact
 ```
 

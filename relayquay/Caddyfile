@@ -1,0 +1,33 @@
+{
+	auto_https off
+	admin off
+}
+
+http://{$RELAYQUAY_BIND:127.0.0.1}:{$RELAYQUAY_LISTEN_PORT:8788} {
+	header {
+		X-Content-Type-Options nosniff
+		Referrer-Policy no-referrer
+		Cache-Control no-store
+	}
+
+	@health path / /healthz /.well-known/relayquay
+	respond @health "relayquay ok" 200
+
+	@id path /ws/id /ws/id/*
+	reverse_proxy @id {$RUSTDESK_HBBS_WS_UPSTREAM:127.0.0.1:21118} {
+		header_up Host {host}
+		header_up X-Real-IP {remote_host}
+		header_up X-Forwarded-For {remote_host}
+		header_up X-Forwarded-Proto https
+	}
+
+	@relay path /ws/relay /ws/relay/*
+	reverse_proxy @relay {$RUSTDESK_HBBR_WS_UPSTREAM:127.0.0.1:21119} {
+		header_up Host {host}
+		header_up X-Real-IP {remote_host}
+		header_up X-Forwarded-For {remote_host}
+		header_up X-Forwarded-Proto https
+	}
+
+	respond "not found" 404
+}

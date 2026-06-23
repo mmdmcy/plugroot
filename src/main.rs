@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::env;
 use std::fs;
 use std::io::{self, Read, Stdout, Write};
@@ -46,6 +46,8 @@ fn run() -> io::Result<u8> {
         "status" => cmd_status(&ctx, &args[1..]),
         "apply" => cmd_apply(&ctx, &args[1..]),
         "repos" => cmd_repos(&ctx, &args[1..]),
+        "doctor" => cmd_doctor(&ctx, &args[1..]),
+        "release-check" => cmd_release_check(&ctx),
         "up" => cmd_action(&ctx, "start", &args[1..]),
         "down" => cmd_action(&ctx, "stop", &args[1..]),
         "restart" => cmd_action(&ctx, "restart", &args[1..]),
@@ -101,6 +103,8 @@ Usage:
   plugroot [--root <path>] list
   plugroot [--root <path>] apply [--dry-run]
   plugroot [--root <path>] repos sync
+  plugroot [--root <path>] doctor [--json] [--strict]
+  plugroot [--root <path>] release-check
   plugroot [--root <path>] up|down|restart|logs <service|all>
   plugroot [--root <path>] tui [--once]
   plugroot [--root <path>] web [--bind <addr:port>]
@@ -346,6 +350,79 @@ impl BoundaryFinding {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+enum DoctorSeverity {
+    Ok,
+    Info,
+    Warn,
+    Error,
+}
+
+impl DoctorSeverity {
+    fn label(&self) -> &'static str {
+        match self {
+            Self::Ok => "ok",
+            Self::Info => "info",
+            Self::Warn => "warn",
+            Self::Error => "error",
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct DoctorFinding {
+    severity: DoctorSeverity,
+    check: String,
+    message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    detail: Option<String>,
+}
+
+impl DoctorFinding {
+    fn new(
+        severity: DoctorSeverity,
+        check: impl Into<String>,
+        message: impl Into<String>,
+        detail: Option<String>,
+    ) -> Self {
+        Self {
+            severity,
+            check: check.into(),
+            message: message.into(),
+            detail,
+        }
+    }
+
+    fn ok(check: impl Into<String>, message: impl Into<String>) -> Self {
+        Self::new(DoctorSeverity::Ok, check, message, None)
+    }
+
+    fn info(
+        check: impl Into<String>,
+        message: impl Into<String>,
+        detail: impl Into<String>,
+    ) -> Self {
+        Self::new(DoctorSeverity::Info, check, message, Some(detail.into()))
+    }
+
+    fn warn(
+        check: impl Into<String>,
+        message: impl Into<String>,
+        detail: impl Into<String>,
+    ) -> Self {
+        Self::new(DoctorSeverity::Warn, check, message, Some(detail.into()))
+    }
+
+    fn error(
+        check: impl Into<String>,
+        message: impl Into<String>,
+        detail: impl Into<String>,
+    ) -> Self {
+        Self::new(DoctorSeverity::Error, check, message, Some(detail.into()))
+    }
+}
+
 fn cmd_boundary(ctx: &Context, args: &[String]) -> io::Result<u8> {
     let mut strict = false;
     for arg in args {
@@ -448,6 +525,1094 @@ IP leaks, and host-specific denylist terms.
         }
     }
     Ok(1)
+}
+
+fn cmd_doctor(ctx: &Context, args: &[String]) -> io::Result<u8> {
+    let mut json = false;
+    let mut strict = false;
+    for arg in args {
+        match arg.as_str() {
+            "-h" | "--help" => {
+                println!(
+                    r#"Usage:
+  plugroot doctor [--json] [--strict]
+
+Runs a read-only host health scan for Plugroot boundaries, declared services,
+firewall exposure, Tailscale Funnel, wildcard listeners, stale Docker/tmux/FUSE
+state, failed systemd units, and basic resource pressure.
+
+By default doctor exits nonzero only for errors. --strict also fails on warnings.
+"#
+                );
+                return Ok(0);
+            }
+            "--json" => json = true,
+            "--strict" => strict = true,
+            _ => {
+                eprintln!("usage: plugroot doctor [--json] [--strict]");
+                return Ok(2);
+            }
+        }
+    }
+
+    let findings = doctor_findings(ctx)?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&findings)?);
+    } else {
+        print_doctor_report(&findings);
+    }
+
+    let has_errors = findings
+        .iter()
+        .any(|finding| finding.severity == DoctorSeverity::Error);
+    let has_warnings = findings
+        .iter()
+        .any(|finding| finding.severity == DoctorSeverity::Warn);
+    if has_errors || (strict && has_warnings) {
+        Ok(1)
+    } else {
+        Ok(0)
+    }
+}
+
+fn cmd_release_check(ctx: &Context) -> io::Result<u8> {
+    let mut failed = false;
+
+    let boundary = boundary_findings(ctx)?;
+    if boundary.is_empty() {
+        println!("boundary: ok");
+    } else {
+        failed = true;
+        eprintln!("boundary: found {} issue(s)", boundary.len());
+        for finding in boundary {
+            let location = finding
+                .path
+                .as_ref()
+                .map(|path| path.display().to_string())
+                .unwrap_or_else(|| "-".into());
+            eprintln!(
+                "{}: {location}: {}",
+                finding.severity.label(),
+                finding.message
+            );
+        }
+    }
+
+    match audit_public(&ctx.root) {
+        Ok(findings) if findings.is_empty() => println!("audit-public: ok"),
+        Ok(findings) => {
+            failed = true;
+            eprintln!("audit-public: found {} issue(s)", findings.len());
+            for finding in findings {
+                match finding.line {
+                    Some(line) => eprintln!("{}:{line}: {}", finding.path, finding.message),
+                    None => eprintln!("{}: {}", finding.path, finding.message),
+                }
+            }
+        }
+        Err(err) => {
+            failed = true;
+            eprintln!("audit-public: failed: {err}");
+        }
+    }
+
+    match git_dirty_details(&ctx.root) {
+        Ok(None) => println!("git: code checkout clean"),
+        Ok(Some(detail)) => {
+            failed = true;
+            eprintln!("git: code checkout has uncommitted changes\n{detail}");
+        }
+        Err(err) => {
+            failed = true;
+            eprintln!("git: could not check code checkout: {err}");
+        }
+    }
+
+    for repo in &ctx.manifest.repo {
+        let path = PathBuf::from(&repo.path);
+        match git_dirty_details(&path) {
+            Ok(None) => println!("git: {} clean", repo.id),
+            Ok(Some(detail)) => {
+                failed = true;
+                eprintln!("git: {} has uncommitted changes\n{detail}", repo.id);
+            }
+            Err(err) => {
+                failed = true;
+                eprintln!("git: could not check {}: {err}", repo.id);
+            }
+        }
+    }
+
+    if failed {
+        Ok(1)
+    } else {
+        println!("release-check: ok");
+        Ok(0)
+    }
+}
+
+fn print_doctor_report(findings: &[DoctorFinding]) {
+    let errors = findings
+        .iter()
+        .filter(|finding| finding.severity == DoctorSeverity::Error)
+        .count();
+    let warnings = findings
+        .iter()
+        .filter(|finding| finding.severity == DoctorSeverity::Warn)
+        .count();
+    println!(
+        "doctor: {} check(s), {errors} error(s), {warnings} warning(s)",
+        findings.len()
+    );
+    println!("{:<7} {:<18} MESSAGE", "STATE", "CHECK");
+    for finding in findings {
+        println!(
+            "{:<7} {:<18} {}",
+            finding.severity.label(),
+            finding.check,
+            finding.message
+        );
+        if let Some(detail) = &finding.detail {
+            for line in detail.lines() {
+                println!("{:<7} {:<18} {}", "", "", line);
+            }
+        }
+    }
+}
+
+fn doctor_findings(ctx: &Context) -> io::Result<Vec<DoctorFinding>> {
+    let mut findings = Vec::new();
+    doctor_boundary(ctx, &mut findings)?;
+    doctor_audit(ctx, &mut findings);
+    doctor_git(ctx, &mut findings);
+    doctor_declared_services(ctx, &mut findings);
+    doctor_resources(&mut findings);
+    doctor_failed_units(&mut findings);
+    doctor_ufw(&mut findings);
+    doctor_tailscale(&mut findings);
+    doctor_listeners(ctx, &mut findings);
+    doctor_docker(ctx, &mut findings);
+    doctor_tmux(&mut findings);
+    doctor_fuse_mounts(&mut findings);
+    Ok(findings)
+}
+
+fn doctor_boundary(ctx: &Context, findings: &mut Vec<DoctorFinding>) -> io::Result<()> {
+    let boundary = boundary_findings(ctx)?;
+    if boundary.is_empty() {
+        findings.push(DoctorFinding::ok(
+            "boundary",
+            "code and private state roots are separated",
+        ));
+        return Ok(());
+    }
+
+    for finding in boundary {
+        let detail = finding
+            .path
+            .as_ref()
+            .map(|path| path.display().to_string())
+            .unwrap_or_else(|| "-".into());
+        match finding.severity {
+            BoundarySeverity::Error => {
+                findings.push(DoctorFinding::error("boundary", finding.message, detail))
+            }
+            BoundarySeverity::Warning => {
+                findings.push(DoctorFinding::warn("boundary", finding.message, detail))
+            }
+        }
+    }
+    Ok(())
+}
+
+fn doctor_audit(ctx: &Context, findings: &mut Vec<DoctorFinding>) {
+    match audit_public(&ctx.root) {
+        Ok(audit) if audit.is_empty() => findings.push(DoctorFinding::ok(
+            "audit-public",
+            "tracked files passed private-state audit",
+        )),
+        Ok(audit) => {
+            let detail = audit
+                .iter()
+                .take(12)
+                .map(|finding| match finding.line {
+                    Some(line) => format!("{}:{}: {}", finding.path, line, finding.message),
+                    None => format!("{}: {}", finding.path, finding.message),
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            findings.push(DoctorFinding::error(
+                "audit-public",
+                format!("tracked files have {} private-state issue(s)", audit.len()),
+                detail,
+            ));
+        }
+        Err(err) => findings.push(DoctorFinding::warn(
+            "audit-public",
+            "could not audit tracked files",
+            err.to_string(),
+        )),
+    }
+}
+
+fn doctor_git(ctx: &Context, findings: &mut Vec<DoctorFinding>) {
+    match git_dirty_details(&ctx.root) {
+        Ok(None) => findings.push(DoctorFinding::ok("git", "code checkout is clean")),
+        Ok(Some(detail)) => findings.push(DoctorFinding::warn(
+            "git",
+            "code checkout has uncommitted changes",
+            detail,
+        )),
+        Err(err) => findings.push(DoctorFinding::warn(
+            "git",
+            "could not check code checkout cleanliness",
+            err.to_string(),
+        )),
+    }
+
+    let mut dirty_repos = Vec::new();
+    let mut failed_repos = Vec::new();
+    for repo in &ctx.manifest.repo {
+        let path = PathBuf::from(&repo.path);
+        match git_dirty_details(&path) {
+            Ok(None) => {}
+            Ok(Some(detail)) => dirty_repos.push(format!("{}:\n{}", repo.id, detail)),
+            Err(err) => failed_repos.push(format!("{}: {err}", repo.id)),
+        }
+    }
+
+    if dirty_repos.is_empty() && failed_repos.is_empty() {
+        findings.push(DoctorFinding::ok(
+            "repo-git",
+            "managed repo checkouts are clean",
+        ));
+        return;
+    }
+
+    if !dirty_repos.is_empty() {
+        findings.push(DoctorFinding::warn(
+            "repo-git",
+            format!("{} managed repo checkout(s) are dirty", dirty_repos.len()),
+            limit_lines(&dirty_repos, 12),
+        ));
+    }
+    if !failed_repos.is_empty() {
+        findings.push(DoctorFinding::warn(
+            "repo-git",
+            format!(
+                "could not inspect {} managed repo checkout(s)",
+                failed_repos.len()
+            ),
+            limit_lines(&failed_repos, 12),
+        ));
+    }
+}
+
+fn doctor_declared_services(ctx: &Context, findings: &mut Vec<DoctorFinding>) {
+    let rows = status_rows(ctx);
+    let mut attention = Vec::new();
+    for row in rows {
+        if row.state == "online" {
+            continue;
+        }
+        if row.optional && matches!(row.state.as_str(), "offline" | "missing") {
+            continue;
+        }
+        attention.push(format!("{}: {} ({})", row.id, row.state, row.detail));
+    }
+
+    if attention.is_empty() {
+        findings.push(DoctorFinding::ok(
+            "services",
+            "declared non-optional services are online",
+        ));
+    } else {
+        findings.push(DoctorFinding::warn(
+            "services",
+            format!("{} declared service(s) need attention", attention.len()),
+            limit_lines(&attention, 16),
+        ));
+    }
+}
+
+fn doctor_resources(findings: &mut Vec<DoctorFinding>) {
+    doctor_load(findings);
+    doctor_memory(findings);
+    doctor_root_disk(findings);
+}
+
+fn doctor_load(findings: &mut Vec<DoctorFinding>) {
+    let Ok(loadavg) = fs::read_to_string("/proc/loadavg") else {
+        findings.push(DoctorFinding::info(
+            "load",
+            "could not read system load",
+            "/proc/loadavg unavailable",
+        ));
+        return;
+    };
+    let Some(load1) = loadavg
+        .split_whitespace()
+        .next()
+        .and_then(|value| value.parse::<f64>().ok())
+    else {
+        findings.push(DoctorFinding::info(
+            "load",
+            "could not parse system load",
+            loadavg,
+        ));
+        return;
+    };
+    let cpus = std::thread::available_parallelism()
+        .map(|count| count.get())
+        .unwrap_or(1) as f64;
+    if load1 > cpus * 1.5 {
+        findings.push(DoctorFinding::warn(
+            "load",
+            "one-minute load is high",
+            format!("load1={load1:.2}, cpu_count={cpus:.0}"),
+        ));
+    } else {
+        findings.push(DoctorFinding::ok(
+            "load",
+            format!("one-minute load is {load1:.2} across {cpus:.0} CPU(s)"),
+        ));
+    }
+}
+
+fn doctor_memory(findings: &mut Vec<DoctorFinding>) {
+    let Ok(meminfo) = fs::read_to_string("/proc/meminfo") else {
+        findings.push(DoctorFinding::info(
+            "memory",
+            "could not read memory pressure",
+            "/proc/meminfo unavailable",
+        ));
+        return;
+    };
+    let Some(total) = meminfo_kb(&meminfo, "MemTotal") else {
+        findings.push(DoctorFinding::info(
+            "memory",
+            "could not parse memory total",
+            "/proc/meminfo missing MemTotal",
+        ));
+        return;
+    };
+    let Some(available) = meminfo_kb(&meminfo, "MemAvailable") else {
+        findings.push(DoctorFinding::info(
+            "memory",
+            "could not parse available memory",
+            "/proc/meminfo missing MemAvailable",
+        ));
+        return;
+    };
+    let percent = available as f64 * 100.0 / total as f64;
+    let detail = format!(
+        "{:.1}% available ({} MiB of {} MiB)",
+        percent,
+        available / 1024,
+        total / 1024
+    );
+    if percent < 10.0 {
+        findings.push(DoctorFinding::warn(
+            "memory",
+            "available memory is low",
+            detail,
+        ));
+    } else {
+        findings.push(DoctorFinding::ok("memory", detail));
+    }
+}
+
+fn doctor_root_disk(findings: &mut Vec<DoctorFinding>) {
+    let out = run_command("df", &["-P".into(), "/".into()], None, &[]);
+    if out.code != 0 {
+        findings.push(DoctorFinding::warn(
+            "disk",
+            "could not inspect root filesystem usage",
+            out.text,
+        ));
+        return;
+    }
+    let Some(line) = out.text.lines().nth(1) else {
+        findings.push(DoctorFinding::info(
+            "disk",
+            "could not parse root filesystem usage",
+            out.text,
+        ));
+        return;
+    };
+    let columns: Vec<&str> = line.split_whitespace().collect();
+    let Some(use_percent) = columns
+        .get(4)
+        .and_then(|value| value.trim_end_matches('%').parse::<u8>().ok())
+    else {
+        findings.push(DoctorFinding::info(
+            "disk",
+            "could not parse root filesystem percentage",
+            line,
+        ));
+        return;
+    };
+    if use_percent >= 90 {
+        findings.push(DoctorFinding::warn(
+            "disk",
+            "root filesystem is close to full",
+            line,
+        ));
+    } else {
+        findings.push(DoctorFinding::ok(
+            "disk",
+            format!("root filesystem is {use_percent}% used"),
+        ));
+    }
+}
+
+fn doctor_failed_units(findings: &mut Vec<DoctorFinding>) {
+    let system = run_command(
+        "systemctl",
+        &["--failed".into(), "--no-legend".into(), "--no-pager".into()],
+        None,
+        &[],
+    );
+    if system.code == 0 {
+        let text = system.text.trim();
+        if text.is_empty() {
+            findings.push(DoctorFinding::ok("systemd", "no failed system units"));
+        } else {
+            findings.push(DoctorFinding::warn(
+                "systemd",
+                "failed system units are present",
+                text,
+            ));
+        }
+    } else {
+        findings.push(DoctorFinding::info(
+            "systemd",
+            "could not inspect failed system units",
+            system.text,
+        ));
+    }
+
+    let user = run_command(
+        "systemctl",
+        &[
+            "--user".into(),
+            "--failed".into(),
+            "--no-legend".into(),
+            "--no-pager".into(),
+        ],
+        None,
+        &[],
+    );
+    if user.code == 0 {
+        let text = user.text.trim();
+        if text.is_empty() {
+            findings.push(DoctorFinding::ok("user-systemd", "no failed user units"));
+        } else {
+            findings.push(DoctorFinding::warn(
+                "user-systemd",
+                "failed user units are present",
+                text,
+            ));
+        }
+    } else {
+        findings.push(DoctorFinding::info(
+            "user-systemd",
+            "could not inspect failed user units",
+            user.text,
+        ));
+    }
+}
+
+fn doctor_ufw(findings: &mut Vec<DoctorFinding>) {
+    let out = run_read_command("ufw", &["status".into(), "verbose".into()]);
+    if out.code != 0 {
+        findings.push(DoctorFinding::warn(
+            "ufw",
+            "could not inspect firewall status",
+            out.text,
+        ));
+        return;
+    }
+
+    let lower = out.text.to_ascii_lowercase();
+    if lower.contains("status: inactive") {
+        findings.push(DoctorFinding::error(
+            "ufw",
+            "firewall is inactive",
+            out.text,
+        ));
+        return;
+    }
+    if !lower.contains("status: active") {
+        findings.push(DoctorFinding::info(
+            "ufw",
+            "firewall status was not recognized",
+            out.text,
+        ));
+        return;
+    }
+
+    let broad = broad_ufw_allow_rules(&out.text);
+    if broad.is_empty() {
+        findings.push(DoctorFinding::ok(
+            "ufw",
+            "firewall is active with no broad inbound allow rules detected",
+        ));
+    } else {
+        findings.push(DoctorFinding::warn(
+            "ufw",
+            format!("{} broad inbound allow rule(s) detected", broad.len()),
+            limit_lines(&broad, 12),
+        ));
+    }
+}
+
+fn doctor_tailscale(findings: &mut Vec<DoctorFinding>) {
+    let serve = run_command("tailscale", &["serve".into(), "status".into()], None, &[]);
+    let funnel = run_command("tailscale", &["funnel".into(), "status".into()], None, &[]);
+    if serve.code == 127 && funnel.code == 127 {
+        findings.push(DoctorFinding::info(
+            "tailscale",
+            "tailscale command is unavailable",
+            serve.text,
+        ));
+        return;
+    }
+
+    let mut details = Vec::new();
+    if serve.code == 0 && !serve.text.is_empty() {
+        details.push(serve.text.clone());
+    }
+    if funnel.code == 0 && !funnel.text.is_empty() && funnel.text != serve.text {
+        details.push(funnel.text.clone());
+    }
+    let combined = details.join("\n");
+    if tailscale_text_has_public_funnel(&combined) {
+        findings.push(DoctorFinding::error(
+            "tailscale",
+            "Tailscale Funnel appears to be enabled",
+            combined,
+        ));
+    } else if serve.code == 0 || funnel.code == 0 {
+        findings.push(DoctorFinding::ok(
+            "tailscale",
+            "no public Tailscale Funnel exposure detected",
+        ));
+    } else {
+        findings.push(DoctorFinding::info(
+            "tailscale",
+            "could not inspect Tailscale Serve/Funnel",
+            [serve.text, funnel.text].join("\n"),
+        ));
+    }
+}
+
+fn doctor_listeners(ctx: &Context, findings: &mut Vec<DoctorFinding>) {
+    let expected_tcp_ports = expected_manifest_tcp_ports(ctx);
+    let out = run_command("ss", &["-ltnupH".into()], None, &[]);
+    if out.code != 0 {
+        findings.push(DoctorFinding::warn(
+            "listeners",
+            "could not inspect listening sockets",
+            out.text,
+        ));
+        return;
+    }
+
+    let unexpected = unexpected_wildcard_tcp_listeners(&out.text, &expected_tcp_ports);
+    if unexpected.is_empty() {
+        findings.push(DoctorFinding::ok(
+            "listeners",
+            "no unexpected wildcard TCP listeners detected",
+        ));
+    } else {
+        findings.push(DoctorFinding::warn(
+            "listeners",
+            format!(
+                "{} unexpected wildcard TCP listener(s) detected",
+                unexpected.len()
+            ),
+            limit_lines(&unexpected, 16),
+        ));
+    }
+}
+
+fn doctor_docker(ctx: &Context, findings: &mut Vec<DoctorFinding>) {
+    doctor_docker_containers(ctx, findings);
+    doctor_docker_networks(findings);
+    doctor_docker_volumes(findings);
+    doctor_docker_reclaimable(findings);
+}
+
+fn doctor_docker_containers(ctx: &Context, findings: &mut Vec<DoctorFinding>) {
+    let out = run_command(
+        "docker",
+        &[
+            "ps".into(),
+            "-a".into(),
+            "--format".into(),
+            "{{.Names}}\t{{.Status}}\t{{.Label \"com.docker.compose.project\"}}".into(),
+        ],
+        None,
+        &[],
+    );
+    if out.code != 0 {
+        findings.push(DoctorFinding::info(
+            "docker",
+            "could not inspect Docker containers",
+            out.text,
+        ));
+        return;
+    }
+
+    let expected = expected_container_names(ctx);
+    let mut stopped = Vec::new();
+    let mut unmanaged = Vec::new();
+    for line in out.text.lines().filter(|line| !line.trim().is_empty()) {
+        let parts: Vec<&str> = line.splitn(3, '\t').collect();
+        let name = parts.first().copied().unwrap_or("");
+        let status = parts.get(1).copied().unwrap_or("");
+        let project = parts.get(2).copied().unwrap_or("");
+        if !status.starts_with("Up ") {
+            stopped.push(format!("{name}: {status}"));
+        } else if !expected.is_empty() && !expected.contains(name) {
+            unmanaged.push(format!("{name}: {status}, project={project}"));
+        }
+    }
+
+    if stopped.is_empty() {
+        findings.push(DoctorFinding::ok(
+            "docker",
+            "no stopped Docker containers detected",
+        ));
+    } else {
+        findings.push(DoctorFinding::warn(
+            "docker",
+            format!("{} stopped Docker container(s) detected", stopped.len()),
+            limit_lines(&stopped, 12),
+        ));
+    }
+
+    if !unmanaged.is_empty() {
+        findings.push(DoctorFinding::info(
+            "docker",
+            format!(
+                "{} running Docker container(s) are not declared in Plugroot",
+                unmanaged.len()
+            ),
+            limit_lines(&unmanaged, 12),
+        ));
+    }
+}
+
+fn doctor_docker_networks(findings: &mut Vec<DoctorFinding>) {
+    let out = run_command(
+        "docker",
+        &[
+            "network".into(),
+            "ls".into(),
+            "--format".into(),
+            "{{.Name}}\t{{.Driver}}".into(),
+        ],
+        None,
+        &[],
+    );
+    if out.code != 0 {
+        findings.push(DoctorFinding::info(
+            "docker-networks",
+            "could not inspect Docker networks",
+            out.text,
+        ));
+        return;
+    }
+
+    let mut empty_custom = Vec::new();
+    for line in out.text.lines().filter(|line| !line.trim().is_empty()) {
+        let mut parts = line.split('\t');
+        let name = parts.next().unwrap_or("");
+        let driver = parts.next().unwrap_or("");
+        if matches!(name, "bridge" | "host" | "none") || driver != "bridge" {
+            continue;
+        }
+        let inspected = run_command(
+            "docker",
+            &[
+                "network".into(),
+                "inspect".into(),
+                "-f".into(),
+                "{{len .Containers}}".into(),
+                name.into(),
+            ],
+            None,
+            &[],
+        );
+        if inspected.code == 0 && inspected.text.trim() == "0" {
+            empty_custom.push(name.to_string());
+        }
+    }
+
+    if empty_custom.is_empty() {
+        findings.push(DoctorFinding::ok(
+            "docker-networks",
+            "no empty custom Docker networks detected",
+        ));
+    } else {
+        findings.push(DoctorFinding::warn(
+            "docker-networks",
+            format!(
+                "{} empty custom Docker network(s) detected",
+                empty_custom.len()
+            ),
+            limit_lines(&empty_custom, 12),
+        ));
+    }
+}
+
+fn doctor_docker_volumes(findings: &mut Vec<DoctorFinding>) {
+    let out = run_command(
+        "docker",
+        &[
+            "volume".into(),
+            "ls".into(),
+            "-qf".into(),
+            "dangling=true".into(),
+        ],
+        None,
+        &[],
+    );
+    if out.code != 0 {
+        findings.push(DoctorFinding::info(
+            "docker-volumes",
+            "could not inspect unused Docker volumes",
+            out.text,
+        ));
+        return;
+    }
+    let volumes: Vec<String> = out
+        .text
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(str::to_string)
+        .collect();
+    if volumes.is_empty() {
+        findings.push(DoctorFinding::ok(
+            "docker-volumes",
+            "no unused Docker volumes detected",
+        ));
+    } else {
+        findings.push(DoctorFinding::warn(
+            "docker-volumes",
+            format!("{} unused Docker volume(s) detected", volumes.len()),
+            limit_lines(&volumes, 12),
+        ));
+    }
+}
+
+fn doctor_docker_reclaimable(findings: &mut Vec<DoctorFinding>) {
+    let out = run_command(
+        "docker",
+        &[
+            "system".into(),
+            "df".into(),
+            "--format".into(),
+            "{{json .}}".into(),
+        ],
+        None,
+        &[],
+    );
+    if out.code != 0 {
+        findings.push(DoctorFinding::info(
+            "docker-cache",
+            "could not inspect Docker reclaimable data",
+            out.text,
+        ));
+        return;
+    }
+
+    let mut reclaimable = Vec::new();
+    for line in out.text.lines().filter(|line| !line.trim().is_empty()) {
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        let item_type = value
+            .get("Type")
+            .and_then(|value| value.as_str())
+            .unwrap_or("Docker data");
+        let amount = value
+            .get("Reclaimable")
+            .and_then(|value| value.as_str())
+            .unwrap_or("");
+        if !amount.starts_with("0B") {
+            reclaimable.push(format!("{item_type}: {amount} reclaimable"));
+        }
+    }
+
+    if reclaimable.is_empty() {
+        findings.push(DoctorFinding::ok(
+            "docker-cache",
+            "Docker reports no reclaimable data",
+        ));
+    } else {
+        findings.push(DoctorFinding::info(
+            "docker-cache",
+            "Docker has reclaimable data",
+            limit_lines(&reclaimable, 8),
+        ));
+    }
+}
+
+fn doctor_tmux(findings: &mut Vec<DoctorFinding>) {
+    let out = run_command(
+        "tmux",
+        &[
+            "list-sessions".into(),
+            "-F".into(),
+            "#{session_name}\t#{session_attached}\t#{t:session_activity}".into(),
+        ],
+        None,
+        &[],
+    );
+    if out.code != 0 {
+        if out.text.to_ascii_lowercase().contains("no server running") {
+            findings.push(DoctorFinding::ok("tmux", "no tmux server is running"));
+        } else {
+            findings.push(DoctorFinding::info(
+                "tmux",
+                "could not inspect tmux sessions",
+                out.text,
+            ));
+        }
+        return;
+    }
+
+    let retired = retired_tmux_sessions(&out.text);
+    if retired.is_empty() {
+        findings.push(DoctorFinding::ok(
+            "tmux",
+            "no retired codex/openclaw tmux sessions detected",
+        ));
+    } else {
+        findings.push(DoctorFinding::warn(
+            "tmux",
+            format!("{} retired tmux session(s) still exist", retired.len()),
+            limit_lines(&retired, 12),
+        ));
+    }
+}
+
+fn doctor_fuse_mounts(findings: &mut Vec<DoctorFinding>) {
+    let out = run_command(
+        "findmnt",
+        &["-rn".into(), "-o".into(), "TARGET,FSTYPE,SOURCE".into()],
+        None,
+        &[],
+    );
+    if out.code != 0 {
+        findings.push(DoctorFinding::info(
+            "fuse",
+            "could not inspect mounted filesystems",
+            out.text,
+        ));
+        return;
+    }
+
+    let mut stale = Vec::new();
+    for line in out.text.lines() {
+        let columns: Vec<&str> = line.split_whitespace().collect();
+        let Some(target) = columns.first().copied() else {
+            continue;
+        };
+        let fstype = columns.get(1).copied().unwrap_or("");
+        if !fstype.starts_with("fuse") {
+            continue;
+        }
+        let stat = run_command(
+            "timeout",
+            &[
+                "2".into(),
+                "stat".into(),
+                "-c".into(),
+                "%F".into(),
+                target.into(),
+            ],
+            None,
+            &[],
+        );
+        if stat.code != 0 {
+            stale.push(format!("{target}: {}", stat.text));
+        }
+    }
+
+    if stale.is_empty() {
+        findings.push(DoctorFinding::ok("fuse", "no stale FUSE mounts detected"));
+    } else {
+        findings.push(DoctorFinding::warn(
+            "fuse",
+            format!("{} stale FUSE mount(s) detected", stale.len()),
+            limit_lines(&stale, 8),
+        ));
+    }
+}
+
+fn meminfo_kb(text: &str, key: &str) -> Option<u64> {
+    text.lines().find_map(|line| {
+        let (name, rest) = line.split_once(':')?;
+        if name != key {
+            return None;
+        }
+        rest.split_whitespace().next()?.parse::<u64>().ok()
+    })
+}
+
+fn broad_ufw_allow_rules(text: &str) -> Vec<String> {
+    text.lines()
+        .map(str::trim)
+        .filter(|line| {
+            line.contains("ALLOW IN")
+                && line.contains("Anywhere")
+                && !line.contains(" on tailscale0")
+                && !line.contains("41641/udp")
+        })
+        .map(str::to_string)
+        .collect()
+}
+
+fn tailscale_text_has_public_funnel(text: &str) -> bool {
+    text.lines().any(|line| {
+        let lower = line.to_ascii_lowercase();
+        lower.contains("funnel")
+            && !lower.contains("funnel off")
+            && !lower.contains("funnel is off")
+            && !lower.contains("disabled")
+    })
+}
+
+fn expected_manifest_tcp_ports(ctx: &Context) -> HashSet<u16> {
+    let mut ports = HashSet::new();
+    for service in &ctx.manifest.service {
+        if matches!(service.kind.as_str(), "port" | "manual") {
+            if let Some(port) = service.port {
+                ports.insert(port);
+            }
+        }
+        for descriptor in service.ports.as_deref().unwrap_or(&[]) {
+            add_tcp_ports_from_descriptor(descriptor, &mut ports);
+        }
+    }
+    ports
+}
+
+fn add_tcp_ports_from_descriptor(descriptor: &str, ports: &mut HashSet<u16>) {
+    for token in descriptor.split(|ch: char| ch.is_whitespace() || ch == ',') {
+        let Some((range, protocol)) = token.split_once('/') else {
+            continue;
+        };
+        if !protocol.to_ascii_lowercase().starts_with("tcp") {
+            continue;
+        }
+        add_port_range(range, ports);
+    }
+}
+
+fn add_port_range(range: &str, ports: &mut HashSet<u16>) {
+    if let Some((start, end)) = range.split_once('-') {
+        let Some(start) = start.parse::<u16>().ok() else {
+            return;
+        };
+        let Some(end) = end.parse::<u16>().ok() else {
+            return;
+        };
+        if start > end {
+            return;
+        }
+        for port in start..=end {
+            ports.insert(port);
+        }
+        return;
+    }
+    if let Ok(port) = range.parse::<u16>() {
+        ports.insert(port);
+    }
+}
+
+fn unexpected_wildcard_tcp_listeners(text: &str, expected_tcp_ports: &HashSet<u16>) -> Vec<String> {
+    text.lines()
+        .filter_map(|line| {
+            let columns: Vec<&str> = line.split_whitespace().collect();
+            if columns.first().copied() != Some("tcp") {
+                return None;
+            }
+            let local = columns.get(4).copied()?;
+            if !is_wildcard_listener(local) {
+                return None;
+            }
+            let port = listener_port(local)?;
+            if expected_tcp_ports.contains(&port) {
+                return None;
+            }
+            Some(line.trim().to_string())
+        })
+        .collect()
+}
+
+fn is_wildcard_listener(local_address: &str) -> bool {
+    local_address.starts_with("0.0.0.0:")
+        || local_address.starts_with("[::]:")
+        || local_address.starts_with("*:")
+}
+
+fn listener_port(local_address: &str) -> Option<u16> {
+    local_address
+        .rsplit_once(':')
+        .and_then(|(_, port)| port.parse::<u16>().ok())
+}
+
+fn expected_container_names(ctx: &Context) -> HashSet<String> {
+    ctx.manifest
+        .service
+        .iter()
+        .flat_map(|service| service.containers.as_deref().unwrap_or(&[]))
+        .cloned()
+        .collect()
+}
+
+fn retired_tmux_sessions(text: &str) -> Vec<String> {
+    text.lines()
+        .filter_map(|line| {
+            let mut columns = line.split('\t');
+            let name = columns.next().unwrap_or("");
+            let attached = columns.next().unwrap_or("");
+            let activity = columns.next().unwrap_or("");
+            if attached == "0" && (name.starts_with("codex-") || name.starts_with("openclaw")) {
+                Some(format!("{name}: detached, last active {activity}"))
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+fn limit_lines(lines: &[String], limit: usize) -> String {
+    let mut selected = lines.iter().take(limit).cloned().collect::<Vec<_>>();
+    if lines.len() > limit {
+        selected.push(format!("... {} more", lines.len() - limit));
+    }
+    selected.join("\n")
+}
+
+fn run_read_command(program: &str, args: &[String]) -> CmdOutput {
+    if is_root() {
+        return run_command(program, args, None, &[]);
+    }
+
+    let mut sudo_args = vec!["-n".into(), program.into()];
+    sudo_args.extend(args.iter().cloned());
+    let sudo = run_command("sudo", &sudo_args, None, &[]);
+    if sudo.code == 0 {
+        sudo
+    } else {
+        run_command(program, args, None, &[])
+    }
 }
 
 fn install_audit_hook(root: &Path) -> io::Result<()> {
@@ -756,7 +1921,7 @@ fn audit_line(line: &str, private_terms: &[String]) -> Vec<String> {
         findings.push("private key material".into());
     }
     for marker in token_markers() {
-        if line.contains(&marker) {
+        if contains_token_marker(line, &marker) {
             findings.push(format!("token marker `{marker}`"));
         }
     }
@@ -786,6 +1951,34 @@ fn token_markers() -> Vec<String> {
         ["xo", "xb-"].concat(),
         ["xo", "xp-"].concat(),
     ]
+}
+
+fn contains_token_marker(line: &str, marker: &str) -> bool {
+    let mut offset = 0;
+    while let Some(relative_start) = line[offset..].find(marker) {
+        let start = offset + relative_start;
+        let suffix_start = start + marker.len();
+        let suffix_len = line[suffix_start..]
+            .chars()
+            .take_while(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-'))
+            .count();
+        if suffix_len >= token_marker_min_suffix(marker) {
+            return true;
+        }
+        offset = suffix_start;
+    }
+    false
+}
+
+fn token_marker_min_suffix(marker: &str) -> usize {
+    let openai_marker = ["s", "k-"].concat();
+    let slack_bot_marker = ["xo", "xb-"].concat();
+    let slack_user_marker = ["xo", "xp-"].concat();
+    if marker == openai_marker || marker == slack_bot_marker || marker == slack_user_marker {
+        16
+    } else {
+        12
+    }
 }
 
 fn suspicious_secret_assignment(line: &str) -> bool {
@@ -1773,6 +2966,37 @@ fn nearest_git_root(path: &Path) -> Option<PathBuf> {
         if !current.pop() {
             return None;
         }
+    }
+}
+
+fn git_dirty_details(path: &Path) -> io::Result<Option<String>> {
+    if nearest_git_root(path).is_none() {
+        return Ok(None);
+    }
+    let out = run_command(
+        "git",
+        &[
+            "-C".into(),
+            path.display().to_string(),
+            "status".into(),
+            "--porcelain=v1".into(),
+        ],
+        None,
+        &[],
+    );
+    if out.code != 0 {
+        return Err(io::Error::other(out.text));
+    }
+    let lines = out
+        .text
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    if lines.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(limit_lines(&lines, 20)))
     }
 }
 
@@ -2794,9 +4018,66 @@ kind = "noop"
     }
 
     #[test]
+    fn audit_token_marker_requires_token_shaped_suffix() {
+        let openai_marker = ["s", "k-"].concat();
+        let rustdesk_image = format!("image: rust{}{}{}", "desk/rustde", "sk", "-server:latest");
+        let token_line = format!("OPENAI_API_KEY={}{}", openai_marker, "abcdefghijklmnop");
+        assert!(!contains_token_marker(&rustdesk_image, &openai_marker));
+        assert!(contains_token_marker(&token_line, &openai_marker));
+    }
+
+    #[test]
     fn audit_rejects_private_paths() {
         assert!(audit_path("docs/private/notes.md").is_some());
         assert!(audit_path("service/data/state.db").is_some());
         assert!(audit_path(".env.example").is_none());
+    }
+
+    #[test]
+    fn doctor_parses_manifest_tcp_port_ranges() {
+        let mut ports = HashSet::new();
+        add_tcp_ports_from_descriptor("21115-21119/tcp tailscale", &mut ports);
+        add_tcp_ports_from_descriptor("21120/udp tailscale", &mut ports);
+
+        assert!(ports.contains(&21115));
+        assert!(ports.contains(&21119));
+        assert!(!ports.contains(&21120));
+    }
+
+    #[test]
+    fn doctor_flags_only_broad_ufw_allows() {
+        let rules = broad_ufw_allow_rules(
+            r#"
+Status: active
+22/tcp on tailscale0       ALLOW IN    Anywhere
+41641/udp                  ALLOW IN    Anywhere
+8080/tcp                   ALLOW IN    Anywhere
+"#,
+        );
+
+        assert_eq!(
+            rules,
+            vec!["8080/tcp                   ALLOW IN    Anywhere"]
+        );
+    }
+
+    #[test]
+    fn doctor_flags_unexpected_wildcard_tcp_listeners() {
+        let mut expected = HashSet::new();
+        expected.insert(22);
+        let listeners = unexpected_wildcard_tcp_listeners(
+            &format!(
+                r#"
+tcp LISTEN 0 4096 0.0.0.0:22 0.0.0.0:*
+tcp LISTEN 0 4096 100.{}.0.1:8088 0.0.0.0:*
+tcp LISTEN 0 4096 *:7345 *:*
+"#,
+                64
+            ),
+            &expected,
+        );
+
+        assert_eq!(listeners.len(), 1);
+        assert!(listeners[0].contains("*:7345"));
     }
 }

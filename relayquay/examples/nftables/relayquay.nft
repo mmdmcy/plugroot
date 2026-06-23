@@ -1,0 +1,33 @@
+#!/usr/sbin/nft -f
+
+# Example only. Review interfaces and private ranges before applying.
+
+table inet relayquay {
+  set rustdesk_tcp_ports {
+    type inet_service
+    elements = { 21115, 21116, 21117, 21118, 21119 }
+  }
+
+  chain input {
+    type filter hook input priority 0; policy accept;
+
+    iifname "lo" accept
+
+    # Trust Tailscale clients for raw RustDesk.
+    iifname "tailscale0" tcp dport @rustdesk_tcp_ports accept
+    iifname "tailscale0" udp dport 21116 accept
+
+    # Trust RFC1918 LANs if that matches your host policy.
+    ip saddr 192.168.0.0/16 tcp dport @rustdesk_tcp_ports accept
+    ip saddr 192.168.0.0/16 udp dport 21116 accept
+    ip saddr 10.0.0.0/8 tcp dport @rustdesk_tcp_ports accept
+    ip saddr 10.0.0.0/8 udp dport 21116 accept
+    ip saddr 172.16.0.0/12 tcp dport @rustdesk_tcp_ports accept
+    ip saddr 172.16.0.0/12 udp dport 21116 accept
+
+    # Block public raw RustDesk access. Cloudflare reaches only loopback Caddy
+    # through cloudflared's outbound tunnel.
+    tcp dport @rustdesk_tcp_ports drop
+    udp dport 21116 drop
+  }
+}

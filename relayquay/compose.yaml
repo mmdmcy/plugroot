@@ -1,0 +1,44 @@
+name: relayquay
+
+services:
+  caddy:
+    image: caddy:${CADDY_TAG:-2-alpine}
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      RELAYQUAY_BIND: ${RELAYQUAY_BIND:-127.0.0.1}
+      RELAYQUAY_LISTEN_PORT: ${RELAYQUAY_LISTEN_PORT:-8788}
+      RUSTDESK_HBBS_WS_UPSTREAM: ${RUSTDESK_HBBS_WS_UPSTREAM:-127.0.0.1:21118}
+      RUSTDESK_HBBR_WS_UPSTREAM: ${RUSTDESK_HBBR_WS_UPSTREAM:-127.0.0.1:21119}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ${RELAYQUAY_STATE_DIR:-./state}/caddy:/data
+
+  cloudflared:
+    image: cloudflare/cloudflared:${CLOUDFLARED_TAG:-latest}
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run --token ${CLOUDFLARE_TUNNEL_TOKEN:?set CLOUDFLARE_TUNNEL_TOKEN in the private env file}
+    depends_on:
+      - caddy
+
+  hbbs:
+    profiles:
+      - server
+    image: rustdesk/rustdesk-server:${RUSTDESK_SERVER_TAG:-latest}
+    restart: unless-stopped
+    command: ${RUSTDESK_HBBS_COMMAND:-hbbs}
+    volumes:
+      - ${RELAYQUAY_STATE_DIR:-./state}/rustdesk:/root
+    network_mode: host
+    depends_on:
+      - hbbr
+
+  hbbr:
+    profiles:
+      - server
+    image: rustdesk/rustdesk-server:${RUSTDESK_SERVER_TAG:-latest}
+    restart: unless-stopped
+    command: ${RUSTDESK_HBBR_COMMAND:-hbbr}
+    volumes:
+      - ${RELAYQUAY_STATE_DIR:-./state}/rustdesk:/root
+    network_mode: host
