@@ -8,8 +8,8 @@ private_ip = "${PLUGROOT_PRIVATE_IP:-127.0.0.1}"
 user = "${PLUGROOT_USER:-plugroot}"
 
 [[file]]
-source = "bin/plugroot-tui"
-target = "/usr/local/bin/plugroot-tui"
+source = "scripts/plugroot"
+target = "/usr/local/bin/plugroot"
 owner = "root:root"
 mode = "0755"
 

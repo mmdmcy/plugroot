@@ -1,0 +1,22 @@
+# Copy this into /var/lib/plugroot/plugroot.local.toml and adjust locally.
+# Do not put real domains or tunnel tokens in the Plugroot checkout.
+
+[[service]]
+id = "relayquay"
+name = "RelayQuay RustDesk Web Gateway"
+plane = "public-authenticated"
+category = "remote-access"
+kind = "compose"
+path = "/opt/plugroot/relayquay"
+env_file = "${PLUGROOT_STATE_ROOT:-/var/lib/plugroot}/relayquay/relayquay.env"
+url = "https://rustdesk-wss.example.com/healthz"
+access = "Cloudflare Access allowlist"
+description = "Access-protected WSS gateway for RustDesk Web."
+containers = ["relayquay-caddy-1", "relayquay-cloudflared-1"]
+controls = ["start", "stop", "restart", "logs"]
+ports = [
+  "8788/tcp loopback Caddy gateway",
+  "21118/tcp private hbbs WebSocket upstream",
+  "21119/tcp private hbbr WebSocket upstream",
+]
+optional = true

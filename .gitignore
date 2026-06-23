@@ -3,7 +3,7 @@
 /.env.*
 !/.env.example
 /AGENTS.md
-/.github/workflows/
+/.qaunxi/
 /docs/private/
 /plugroot.local.toml
 /*.local.toml

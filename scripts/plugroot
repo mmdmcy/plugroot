@@ -1,0 +1,16 @@
+#!/bin/sh
+set -eu
+
+root="${PLUGROOT_CODE_ROOT:-/opt/plugroot}"
+bin="${PLUGROOT_BIN:-$root/bin/plugroot}"
+
+if [ ! -x "$bin" ]; then
+  echo "plugroot: cannot find plugroot binary at $bin" >&2
+  exit 127
+fi
+
+if [ "$(id -u)" -ne 0 ] && [ "${1:-}" = "tui" ] && command -v sudo >/dev/null 2>&1; then
+  exec sudo "$bin" --root "$root" "$@"
+fi
+
+exec "$bin" --root "$root" "$@"
