@@ -4073,37 +4073,42 @@ main{{padding:10px max(10px,env(safe-area-inset-right)) max(16px,env(safe-area-i
 .top-actions{{display:flex;align-items:center;gap:7px}}
 .toplink,button,.launch{{display:inline-flex;align-items:center;justify-content:center;min-height:30px;color:var(--text);border:1px solid var(--line);border-radius:6px;padding:5px 9px;background:var(--panel);font:inherit;cursor:pointer}}
 .toplink{{color:var(--muted)}}
-.hero{{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px;align-items:stretch;margin-bottom:10px}}
-.hero-main{{min-width:0;padding:10px;border:1px solid var(--line);border-radius:8px;background:var(--panel)}}
-.hero-main p{{margin-top:5px;color:var(--muted);line-height:1.35}}
-.facts{{display:grid;grid-template-columns:repeat(4,minmax(64px,1fr));gap:7px}}
-.fact{{min-height:54px;padding:8px;border:1px solid var(--line);border-radius:8px;background:var(--panel-2)}}
-.fact strong{{display:block;font-size:18px;line-height:1.05}}
-.fact span{{display:block;margin-top:4px;color:var(--muted);font-size:11px;white-space:nowrap}}
+.hero{{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;align-items:stretch;margin-bottom:8px}}
+.hero-main{{min-width:0;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:var(--panel)}}
+.hero-main p{{margin-top:4px;color:var(--muted);line-height:1.3}}
+.facts{{display:grid;grid-template-columns:repeat(4,minmax(58px,1fr));gap:5px}}
+.fact{{min-height:46px;padding:6px 7px;border:1px solid var(--line);border-radius:8px;background:var(--panel-2)}}
+.fact strong{{display:block;font-size:17px;line-height:1}}
+.fact span{{display:block;margin-top:3px;color:var(--muted);font-size:10px;white-space:nowrap}}
 .meta{{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}}
 .chip{{display:inline-flex;align-items:center;min-height:22px;border:1px solid var(--line);border-radius:6px;padding:2px 6px;color:var(--muted);background:#141920;max-width:100%;overflow-wrap:anywhere;font-size:12px}}
-.group{{margin-top:10px}}
-.group-head{{display:flex;justify-content:space-between;gap:10px;align-items:center;margin-bottom:6px}}
+.group{{margin-top:8px}}
+.group-head{{display:flex;justify-content:space-between;gap:10px;align-items:center;margin-bottom:5px}}
 .group-head p,.eyebrow{{color:var(--muted)}}
 .eyebrow{{display:block;margin-bottom:2px;text-transform:uppercase;font-size:10px;letter-spacing:.08em}}
-.grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:7px}}
-.svc{{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:6px 10px;border:1px solid var(--line);border-radius:8px;padding:9px;background:var(--panel)}}
-.svc-head{{display:flex;gap:8px;align-items:flex-start;min-width:0}}
-.svc-title{{min-width:0}}
-.svc-title p{{margin-top:3px;color:var(--muted);font-size:12px;overflow-wrap:anywhere}}
+.grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:5px}}
+.svc{{border:1px solid var(--line);border-radius:8px;background:var(--panel);overflow:hidden}}
+.svc summary{{list-style:none;cursor:pointer}}
+.svc summary::-webkit-details-marker{{display:none}}
+.svc-row{{display:grid;grid-template-columns:minmax(0,1fr) auto auto;gap:7px;align-items:center;min-height:42px;padding:7px 8px}}
+.svc-title{{min-width:0;display:grid;gap:2px}}
+.svc-title h3{{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}}
+.svc-title p{{color:var(--muted);font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}}
 .state{{justify-self:end;flex:0 0 auto;border:1px solid currentColor;border-radius:6px;padding:3px 6px;font-size:11px;text-transform:uppercase}}
 .state-online{{color:var(--ok)}}.state-attention{{color:var(--bad)}}.state-idle{{color:var(--muted)}}.state-unknown{{color:var(--warn)}}
-.detail{{grid-column:1/-1;color:#d7dbe0;overflow-wrap:anywhere;line-height:1.3}}
-.desc{{grid-column:1/-1;color:var(--muted);line-height:1.3}}
-.svc-meta{{grid-column:1/-1;display:flex;gap:5px;flex-wrap:wrap}}
-.actions{{grid-column:1/-1;display:flex;gap:6px;flex-wrap:wrap;align-items:center}}
+.more{{color:var(--muted);font-size:11px;border:1px solid var(--line);border-radius:6px;padding:3px 5px}}
+.svc-body{{display:grid;gap:6px;padding:0 8px 8px;border-top:1px solid var(--line)}}
+.detail{{padding-top:7px;color:#d7dbe0;overflow-wrap:anywhere;line-height:1.3}}
+.desc{{color:var(--muted);line-height:1.3}}
+.svc-meta{{display:flex;gap:5px;flex-wrap:wrap}}
+.actions{{display:flex;gap:6px;flex-wrap:wrap;align-items:center}}
 .actions form{{margin:0}}
 .launch{{background:#233246;border-color:#40556f}}
 .disabled{{color:var(--muted);cursor:default}}
 .empty{{border:1px solid var(--line);border-radius:8px;padding:14px;background:var(--panel)}}
 .empty p{{margin-top:8px;color:var(--muted)}}
-@media (max-width:760px){{.hero{{grid-template-columns:1fr}}.facts{{grid-template-columns:repeat(4,minmax(0,1fr))}}.group-head{{align-items:flex-start;flex-direction:column;gap:3px}}}}
-@media (max-width:430px){{body{{font-size:12px}}header{{min-height:44px}}h1{{font-size:18px}}.toplink,.top-actions button{{min-height:28px;padding:4px 7px}}.facts{{grid-template-columns:repeat(2,minmax(0,1fr))}}.grid{{grid-template-columns:1fr}}.svc{{padding:8px}}.chip{{font-size:11px}}}}
+@media (max-width:760px){{.hero{{grid-template-columns:1fr}}.facts{{grid-template-columns:repeat(4,minmax(0,1fr))}}.group-head{{align-items:flex-start;flex-direction:column;gap:2px}}}}
+@media (max-width:430px){{body{{font-size:12px}}header{{min-height:42px}}h1{{font-size:18px}}main{{padding-top:7px}}.toplink,.top-actions button{{min-height:27px;padding:4px 7px}}.hero{{gap:6px;margin-bottom:6px}}.hero-main{{padding:7px 8px}}.hero-main p,.meta{{display:none}}.facts{{grid-template-columns:repeat(4,minmax(0,1fr));gap:4px}}.fact{{min-height:38px;padding:5px}}.fact strong{{font-size:15px}}.fact span{{font-size:9px}}.group{{margin-top:6px}}.grid{{grid-template-columns:1fr;gap:4px}}.svc-row{{min-height:38px;padding:6px 7px}}.chip{{font-size:11px}}}}
 </style>
 </head>
 <body>
@@ -4123,7 +4128,7 @@ main{{padding:10px max(10px,env(safe-area-inset-right)) max(16px,env(safe-area-i
     <div class="fact"><strong>{}</strong><span>services</span></div>
     <div class="fact"><strong>{}</strong><span>online</span></div>
     <div class="fact"><strong>{}</strong><span>attention</span></div>
-    <div class="fact"><strong>{}</strong><span>optional idle</span></div>
+    <div class="fact"><strong>{}</strong><span>idle</span></div>
   </div>
 </section>
 {}
@@ -4202,18 +4207,25 @@ fn render_web_service(row: &StatusRow) -> String {
     } else {
         ""
     };
+    let open = if web_needs_attention(row) {
+        " open"
+    } else {
+        ""
+    };
 
     format!(
-        r#"<article class="svc"><div class="svc-head"><div class="svc-title"><h3>{}</h3><p>{} / {} / {}</p></div><span class="state {}">{}</span></div><p class="detail">{}</p>{}<div class="svc-meta"><span class="chip">id {}</span>{}{}{}{}</div><div class="actions">{}{}</div></article>"#,
+        r#"<details class="svc"{}><summary class="svc-row"><div class="svc-title"><h3>{}</h3><p>{}</p></div><span class="state {}">{}</span><span class="more">more</span></summary><div class="svc-body"><p class="detail">{}</p>{}<div class="svc-meta"><span class="chip">id {}</span><span class="chip">{} / {} / {}</span>{}{}{}{}</div><div class="actions">{}{}</div></div></details>"#,
+        open,
         html_escape(&row.name),
-        html_escape(&row.plane),
-        html_escape(&web_category_label(row)),
-        html_escape(&row.kind),
+        html_escape(&row.detail),
         web_state_class(row),
         html_escape(&row.state),
         html_escape(&row.detail),
         description,
         html_escape(&row.id),
+        html_escape(&row.plane),
+        html_escape(&web_category_label(row)),
+        html_escape(&row.kind),
         repo,
         access,
         ports,
