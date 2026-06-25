@@ -6,7 +6,7 @@ use std::net::{SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
 use std::ops::Range;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, ExitCode};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
@@ -16,6 +16,7 @@ use crossterm::style::{Attribute, Color, Print, ResetColor, SetAttribute, SetFor
 use crossterm::terminal::{self, Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen};
 use crossterm::{execute, queue};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 fn main() -> ExitCode {
     match run() {
@@ -3577,18 +3578,39 @@ fn cmd_web(ctx: Context, args: &[String]) -> io::Result<u8> {
 fn handle_http(ctx: Context, mut stream: TcpStream) -> io::Result<()> {
     let mut buf = [0u8; 8192];
     let n = stream.read(&mut buf)?;
-    let request = String::from_utf8_lossy(&buf[..n]);
-    let Some(first_line) = request.lines().next() else {
+    let mut data = buf[..n].to_vec();
+    read_http_body(&mut stream, &mut data)?;
+    let request = String::from_utf8_lossy(&data);
+    let Some(web_request) = parse_web_request(&request) else {
         return Ok(());
     };
-    let parts: Vec<&str> = first_line.split_whitespace().collect();
-    if parts.len() < 2 {
-        return Ok(());
-    }
-    let method = parts[0];
-    let path = parts[1];
+    let method = web_request.method.as_str();
+    let path = web_request.path.as_str();
 
-    if !web_authorized(&ctx, &request) {
+    if method == "GET" && path == "/login" {
+        let body = render_web_login(&ctx, None);
+        return http_response(
+            &mut stream,
+            200,
+            "text/html; charset=utf-8",
+            body.as_bytes(),
+        );
+    }
+    if method == "POST" && path == "/login" {
+        return handle_web_login(&ctx, &mut stream, &web_request);
+    }
+    if method == "POST" && path == "/logout" {
+        return http_redirect_with_cookie(
+            &mut stream,
+            "/login",
+            "plugroot_session=; Max-Age=0; Path=/; HttpOnly; SameSite=Lax",
+        );
+    }
+
+    if !web_authorized(&ctx, &web_request) {
+        if method == "GET" && path == "/" {
+            return http_redirect(&mut stream, "/login");
+        }
         return http_unauthorized(&mut stream);
     }
 
@@ -3629,7 +3651,69 @@ fn handle_http(ctx: Context, mut stream: TcpStream) -> io::Result<()> {
     http_response(&mut stream, 404, "text/plain", b"not found")
 }
 
-fn web_authorized(ctx: &Context, request: &str) -> bool {
+#[derive(Debug)]
+struct WebRequest {
+    method: String,
+    path: String,
+    headers: Vec<(String, String)>,
+    body: String,
+}
+
+fn read_http_body(stream: &mut TcpStream, data: &mut Vec<u8>) -> io::Result<()> {
+    let Some(header_end) = find_header_end(data) else {
+        return Ok(());
+    };
+    let headers = String::from_utf8_lossy(&data[..header_end]);
+    let content_length = headers
+        .lines()
+        .find_map(|line| {
+            line.split_once(':').and_then(|(name, value)| {
+                name.eq_ignore_ascii_case("content-length")
+                    .then(|| value.trim().parse::<usize>().ok())
+                    .flatten()
+            })
+        })
+        .unwrap_or(0);
+    let needed = header_end + 4 + content_length;
+    while data.len() < needed {
+        let mut buf = [0u8; 4096];
+        let n = stream.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        data.extend_from_slice(&buf[..n]);
+    }
+    Ok(())
+}
+
+fn find_header_end(data: &[u8]) -> Option<usize> {
+    data.windows(4).position(|window| window == b"\r\n\r\n")
+}
+
+fn parse_web_request(request: &str) -> Option<WebRequest> {
+    let (head, body) = request.split_once("\r\n\r\n").unwrap_or((request, ""));
+    let mut lines = head.lines();
+    let first_line = lines.next()?;
+    let parts: Vec<&str> = first_line.split_whitespace().collect();
+    if parts.len() < 2 {
+        return None;
+    }
+    let path = parts[1].split('?').next().unwrap_or(parts[1]).to_string();
+    let headers = lines
+        .filter_map(|line| {
+            line.split_once(':')
+                .map(|(name, value)| (name.trim().to_ascii_lowercase(), value.trim().to_string()))
+        })
+        .collect();
+    Some(WebRequest {
+        method: parts[0].to_string(),
+        path,
+        headers,
+        body: body.to_string(),
+    })
+}
+
+fn web_authorized(ctx: &Context, request: &WebRequest) -> bool {
     let password = ctx
         .env_values
         .get("PLUGROOT_WEB_PASSWORD")
@@ -3644,11 +3728,139 @@ fn web_authorized(ctx: &Context, request: &str) -> bool {
         .map(String::as_str)
         .unwrap_or("plugroot");
     let expected = format!("Basic {}", BASE64.encode(format!("{user}:{password}")));
-    request.lines().any(|line| {
-        line.strip_prefix("Authorization:")
-            .map(str::trim)
-            .is_some_and(|value| value == expected)
-    })
+    request
+        .headers
+        .iter()
+        .any(|(name, value)| name == "authorization" && value == &expected)
+        || request
+            .headers
+            .iter()
+            .find(|(name, _)| name == "cookie")
+            .is_some_and(|(_, value)| web_session_valid(ctx, value))
+}
+
+fn handle_web_login(ctx: &Context, stream: &mut TcpStream, request: &WebRequest) -> io::Result<()> {
+    let fields = parse_form_body(&request.body);
+    let expected_user = ctx
+        .env_values
+        .get("PLUGROOT_WEB_USER")
+        .filter(|value| !value.is_empty())
+        .map(String::as_str)
+        .unwrap_or("plugroot");
+    let expected_password = ctx
+        .env_values
+        .get("PLUGROOT_WEB_PASSWORD")
+        .filter(|value| !value.is_empty())
+        .map(String::as_str)
+        .unwrap_or("");
+    let user = fields.get("user").map(String::as_str).unwrap_or("");
+    let password = fields.get("password").map(String::as_str).unwrap_or("");
+    if expected_password.is_empty() || (user == expected_user && password == expected_password) {
+        let cookie = web_session_cookie(ctx);
+        return http_redirect_with_cookie(stream, "/", &cookie);
+    }
+    let body = render_web_login(ctx, Some("Wrong username or password."));
+    http_response(stream, 401, "text/html; charset=utf-8", body.as_bytes())
+}
+
+fn parse_form_body(body: &str) -> HashMap<String, String> {
+    body.split('&')
+        .filter_map(|pair| {
+            let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
+            Some((url_decode(key)?, url_decode(value)?))
+        })
+        .collect()
+}
+
+fn url_decode(value: &str) -> Option<String> {
+    let mut out = Vec::with_capacity(value.len());
+    let bytes = value.as_bytes();
+    let mut index = 0;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'+' => {
+                out.push(b' ');
+                index += 1;
+            }
+            b'%' if index + 2 < bytes.len() => {
+                let hex = std::str::from_utf8(&bytes[index + 1..index + 3]).ok()?;
+                out.push(u8::from_str_radix(hex, 16).ok()?);
+                index += 3;
+            }
+            byte => {
+                out.push(byte);
+                index += 1;
+            }
+        }
+    }
+    String::from_utf8(out).ok()
+}
+
+fn web_session_cookie(ctx: &Context) -> String {
+    let ttl = ctx
+        .env_values
+        .get("PLUGROOT_WEB_SESSION_TTL_SECONDS")
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(604800);
+    let expires = now_unix_seconds().saturating_add(ttl);
+    let signature = web_session_signature(ctx, expires);
+    format!("plugroot_session={expires}.{signature}; Max-Age={ttl}; Path=/; HttpOnly; SameSite=Lax")
+}
+
+fn web_session_valid(ctx: &Context, cookie_header: &str) -> bool {
+    let Some(value) = cookie_header.split(';').find_map(|part| {
+        let (name, value) = part.trim().split_once('=')?;
+        (name == "plugroot_session").then_some(value)
+    }) else {
+        return false;
+    };
+    let Some((expires, signature)) = value.split_once('.') else {
+        return false;
+    };
+    let Ok(expires) = expires.parse::<u64>() else {
+        return false;
+    };
+    expires >= now_unix_seconds() && signature == web_session_signature(ctx, expires)
+}
+
+fn web_session_signature(ctx: &Context, expires: u64) -> String {
+    let user = ctx
+        .env_values
+        .get("PLUGROOT_WEB_USER")
+        .filter(|value| !value.is_empty())
+        .map(String::as_str)
+        .unwrap_or("plugroot");
+    let password = ctx
+        .env_values
+        .get("PLUGROOT_WEB_PASSWORD")
+        .filter(|value| !value.is_empty())
+        .map(String::as_str)
+        .unwrap_or("");
+    let mut hasher = Sha256::new();
+    hasher.update(b"plugroot-web-session-v1");
+    hasher.update(user.as_bytes());
+    hasher.update(b":");
+    hasher.update(expires.to_string().as_bytes());
+    hasher.update(b":");
+    hasher.update(password.as_bytes());
+    to_hex(&hasher.finalize())
+}
+
+fn to_hex(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        out.push(HEX[(byte >> 4) as usize] as char);
+        out.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    out
+}
+
+fn now_unix_seconds() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or(0)
 }
 
 fn http_unauthorized(stream: &mut TcpStream) -> io::Result<()> {
@@ -3661,6 +3873,24 @@ fn http_unauthorized(stream: &mut TcpStream) -> io::Result<()> {
     stream.write_all(body)
 }
 
+fn http_redirect(stream: &mut TcpStream, location: &str) -> io::Result<()> {
+    write!(
+        stream,
+        "HTTP/1.1 303 See Other\r\nLocation: {location}\r\nContent-Length: 0\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n"
+    )
+}
+
+fn http_redirect_with_cookie(
+    stream: &mut TcpStream,
+    location: &str,
+    cookie: &str,
+) -> io::Result<()> {
+    write!(
+        stream,
+        "HTTP/1.1 303 See Other\r\nLocation: {location}\r\nSet-Cookie: {cookie}\r\nContent-Length: 0\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n"
+    )
+}
+
 fn http_response(
     stream: &mut TcpStream,
     status: u16,
@@ -3669,7 +3899,9 @@ fn http_response(
 ) -> io::Result<()> {
     let reason = match status {
         200 => "OK",
+        303 => "See Other",
         400 => "Bad Request",
+        401 => "Unauthorized",
         403 => "Forbidden",
         404 => "Not Found",
         500 => "Internal Server Error",
@@ -3681,6 +3913,58 @@ fn http_response(
         body.len()
     )?;
     stream.write_all(body)
+}
+
+fn render_web_login(ctx: &Context, error: Option<&str>) -> String {
+    let user = ctx
+        .env_values
+        .get("PLUGROOT_WEB_USER")
+        .filter(|value| !value.is_empty())
+        .map(String::as_str)
+        .unwrap_or("plugroot");
+    let error_html = error
+        .map(|message| format!(r#"<p class="error">{}</p>"#, html_escape(message)))
+        .unwrap_or_default();
+    format!(
+        r##"<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Plugroot">
+<meta name="theme-color" content="#111418">
+<title>Plugroot Login</title>
+<style>
+:root{{color-scheme:dark;--bg:#111418;--panel:#1b2026;--line:#343b45;--text:#f5f2ea;--muted:#aeb5bf;--accent:#7fb4e8;--bad:#ff8b86}}
+*{{box-sizing:border-box}}
+html,body{{min-height:100%;margin:0;background:var(--bg);color:var(--text);font:15px system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;letter-spacing:0}}
+body{{display:grid;place-items:center;padding:18px}}
+main{{width:min(380px,100%);border:1px solid var(--line);border-radius:8px;background:var(--panel);padding:18px;box-shadow:0 18px 48px rgba(0,0,0,.24)}}
+h1{{font-size:24px;line-height:1.1;margin:0 0 6px}}
+p{{margin:0 0 14px;color:var(--muted);line-height:1.4}}
+form{{display:grid;gap:10px}}
+label{{display:grid;gap:5px;color:var(--muted);font-size:13px;font-weight:700}}
+input{{width:100%;min-height:42px;border:1px solid var(--line);border-radius:7px;background:#11161b;color:var(--text);padding:9px 10px;font:inherit;font-size:16px}}
+button{{min-height:42px;border:1px solid #47627f;border-radius:7px;background:#223247;color:var(--text);font:inherit;font-weight:800;cursor:pointer}}
+.error{{color:var(--bad);font-weight:800;margin-bottom:10px}}
+</style>
+</head>
+<body>
+<main>
+  <h1>Plugroot</h1>
+  <p>Sign in to the service overview.</p>
+  {error_html}
+  <form method="post" action="/login">
+    <label>Username <input name="user" value="{}" autocomplete="username" required autofocus></label>
+    <label>Password <input name="password" type="password" autocomplete="current-password" required></label>
+    <button type="submit">Sign In</button>
+  </form>
+</main>
+</body>
+</html>"##,
+        html_escape(user)
+    )
 }
 
 fn render_web(ctx: &Context) -> String {
@@ -3766,59 +4050,64 @@ fn render_web(ctx: &Context) -> String {
     };
 
     format!(
-        r#"<!doctype html>
+        r##"<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Plugroot">
+<meta name="theme-color" content="#111418">
 <title>Plugroot</title>
 <style>
-:root{{color-scheme:dark;--bg:#101113;--panel:#181a1d;--panel-2:#202327;--line:#30343a;--text:#f3f1eb;--muted:#a9adb4;--ok:#7acb7a;--warn:#e1b65d;--bad:#ef767a;--info:#70a7d9}}
+:root{{color-scheme:dark;--bg:#111418;--panel:#191e24;--panel-2:#202630;--line:#343b45;--text:#f5f2ea;--muted:#aeb5bf;--ok:#7fd17c;--warn:#e6be63;--bad:#f47c80;--info:#7fb4e8}}
 *{{box-sizing:border-box}}
-body{{margin:0;font:14px system-ui,sans-serif;background:var(--bg);color:var(--text);letter-spacing:0}}
-a{{color:inherit}}
-header{{display:flex;justify-content:space-between;align-items:center;gap:16px;padding:20px 24px;border-bottom:1px solid var(--line);background:#15171a}}
+html,body{{min-height:100%;margin:0;background:var(--bg);color:var(--text);font:13px system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;letter-spacing:0}}
+a{{color:inherit;text-decoration:none}}
+header{{position:sticky;top:0;z-index:2;display:flex;justify-content:space-between;align-items:center;gap:10px;min-height:48px;padding:8px max(12px,env(safe-area-inset-right)) 8px max(12px,env(safe-area-inset-left));border-bottom:1px solid var(--line);background:#151a20}}
 h1,h2,h3,p{{margin:0}}
-h1{{font-size:24px;line-height:1.1}}
-h2{{font-size:18px;line-height:1.2}}
-h3{{font-size:16px;line-height:1.25}}
-main{{padding:20px 24px 28px}}
-.toplink{{color:var(--muted);text-decoration:none;border:1px solid var(--line);border-radius:6px;padding:7px 10px;background:var(--panel)}}
-.hero{{display:grid;grid-template-columns:minmax(0,1.2fr) minmax(320px,.8fr);gap:16px;margin-bottom:22px}}
-.hero-main{{padding:18px;border:1px solid var(--line);border-radius:8px;background:var(--panel)}}
-.hero-main p{{margin-top:8px;color:var(--muted);line-height:1.45}}
-.facts{{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}}
-.fact{{min-height:74px;padding:12px;border:1px solid var(--line);border-radius:8px;background:var(--panel-2)}}
-.fact strong{{display:block;font-size:24px;line-height:1.1}}
-.fact span{{display:block;margin-top:6px;color:var(--muted)}}
-.meta{{display:flex;gap:8px;flex-wrap:wrap;margin-top:14px}}
-.chip{{display:inline-flex;align-items:center;min-height:26px;border:1px solid var(--line);border-radius:6px;padding:4px 8px;color:var(--muted);background:#141619;max-width:100%;overflow-wrap:anywhere}}
-.group{{margin-top:18px}}
-.group-head{{display:flex;justify-content:space-between;gap:16px;align-items:flex-end;margin-bottom:10px}}
+h1{{font-size:20px;line-height:1.1}}
+h2{{font-size:15px;line-height:1.2}}
+h3{{font-size:14px;line-height:1.2}}
+main{{padding:10px max(10px,env(safe-area-inset-right)) max(16px,env(safe-area-inset-bottom)) max(10px,env(safe-area-inset-left))}}
+.top-actions{{display:flex;align-items:center;gap:7px}}
+.toplink,button,.launch{{display:inline-flex;align-items:center;justify-content:center;min-height:30px;color:var(--text);border:1px solid var(--line);border-radius:6px;padding:5px 9px;background:var(--panel);font:inherit;cursor:pointer}}
+.toplink{{color:var(--muted)}}
+.hero{{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px;align-items:stretch;margin-bottom:10px}}
+.hero-main{{min-width:0;padding:10px;border:1px solid var(--line);border-radius:8px;background:var(--panel)}}
+.hero-main p{{margin-top:5px;color:var(--muted);line-height:1.35}}
+.facts{{display:grid;grid-template-columns:repeat(4,minmax(64px,1fr));gap:7px}}
+.fact{{min-height:54px;padding:8px;border:1px solid var(--line);border-radius:8px;background:var(--panel-2)}}
+.fact strong{{display:block;font-size:18px;line-height:1.05}}
+.fact span{{display:block;margin-top:4px;color:var(--muted);font-size:11px;white-space:nowrap}}
+.meta{{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}}
+.chip{{display:inline-flex;align-items:center;min-height:22px;border:1px solid var(--line);border-radius:6px;padding:2px 6px;color:var(--muted);background:#141920;max-width:100%;overflow-wrap:anywhere;font-size:12px}}
+.group{{margin-top:10px}}
+.group-head{{display:flex;justify-content:space-between;gap:10px;align-items:center;margin-bottom:6px}}
 .group-head p,.eyebrow{{color:var(--muted)}}
-.eyebrow{{display:block;margin-bottom:4px;text-transform:uppercase;font-size:11px;letter-spacing:.08em}}
-.grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(290px,1fr));gap:12px}}
-.svc{{display:flex;flex-direction:column;gap:12px;min-height:250px;border:1px solid var(--line);border-radius:8px;padding:14px;background:var(--panel)}}
-.svc-head{{display:flex;justify-content:space-between;gap:12px;align-items:flex-start}}
+.eyebrow{{display:block;margin-bottom:2px;text-transform:uppercase;font-size:10px;letter-spacing:.08em}}
+.grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:7px}}
+.svc{{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:6px 10px;border:1px solid var(--line);border-radius:8px;padding:9px;background:var(--panel)}}
+.svc-head{{display:flex;gap:8px;align-items:flex-start;min-width:0}}
 .svc-title{{min-width:0}}
-.svc-title p{{margin-top:5px;color:var(--muted);font-size:13px;overflow-wrap:anywhere}}
-.state{{flex:0 0 auto;border:1px solid currentColor;border-radius:6px;padding:4px 7px;font-size:12px;text-transform:uppercase}}
+.svc-title p{{margin-top:3px;color:var(--muted);font-size:12px;overflow-wrap:anywhere}}
+.state{{justify-self:end;flex:0 0 auto;border:1px solid currentColor;border-radius:6px;padding:3px 6px;font-size:11px;text-transform:uppercase}}
 .state-online{{color:var(--ok)}}.state-attention{{color:var(--bad)}}.state-idle{{color:var(--muted)}}.state-unknown{{color:var(--warn)}}
-.detail{{line-height:1.45;color:#d4d6da;overflow-wrap:anywhere}}
-.desc{{color:var(--muted);line-height:1.45}}
-.svc-meta{{display:flex;gap:7px;flex-wrap:wrap;margin-top:auto}}
-.actions{{display:flex;gap:8px;flex-wrap:wrap;align-items:center}}
-button,.launch{{display:inline-flex;align-items:center;min-height:30px;background:#23272d;color:var(--text);border:1px solid #4a515b;border-radius:6px;padding:6px 10px;cursor:pointer;text-decoration:none;font:inherit}}
-.launch{{background:#243141;border-color:#3e536d}}
+.detail{{grid-column:1/-1;color:#d7dbe0;overflow-wrap:anywhere;line-height:1.3}}
+.desc{{grid-column:1/-1;color:var(--muted);line-height:1.3}}
+.svc-meta{{grid-column:1/-1;display:flex;gap:5px;flex-wrap:wrap}}
+.actions{{grid-column:1/-1;display:flex;gap:6px;flex-wrap:wrap;align-items:center}}
+.actions form{{margin:0}}
+.launch{{background:#233246;border-color:#40556f}}
 .disabled{{color:var(--muted);cursor:default}}
-.empty{{border:1px solid var(--line);border-radius:8px;padding:20px;background:var(--panel)}}
+.empty{{border:1px solid var(--line);border-radius:8px;padding:14px;background:var(--panel)}}
 .empty p{{margin-top:8px;color:var(--muted)}}
-@media (max-width:760px){{header,.group-head{{align-items:flex-start;flex-direction:column}}main{{padding:16px}}.hero{{grid-template-columns:1fr}}.facts{{grid-template-columns:1fr 1fr}}}}
-@media (max-width:430px){{.facts{{grid-template-columns:1fr}}.svc-head{{flex-direction:column}}}}
+@media (max-width:760px){{.hero{{grid-template-columns:1fr}}.facts{{grid-template-columns:repeat(4,minmax(0,1fr))}}.group-head{{align-items:flex-start;flex-direction:column;gap:3px}}}}
+@media (max-width:430px){{body{{font-size:12px}}header{{min-height:44px}}h1{{font-size:18px}}.toplink,.top-actions button{{min-height:28px;padding:4px 7px}}.facts{{grid-template-columns:repeat(2,minmax(0,1fr))}}.grid{{grid-template-columns:1fr}}.svc{{padding:8px}}.chip{{font-size:11px}}}}
 </style>
 </head>
 <body>
-<header><h1>Plugroot</h1><a class="toplink" href="/api/status">status json</a></header>
+<header><h1>Plugroot</h1><div class="top-actions"><a class="toplink" href="/api/status">json</a><form method="post" action="/logout"><button type="submit">log out</button></form></div></header>
 <main>
 <section class="hero">
   <div class="hero-main">
@@ -3840,7 +4129,7 @@ button,.launch{{display:inline-flex;align-items:center;min-height:30px;backgroun
 {}
 </main>
 </body>
-</html>"#,
+</html>"##,
         html_escape(host_name),
         total,
         planes,
