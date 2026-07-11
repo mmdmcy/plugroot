@@ -1,14 +1,23 @@
-name: checks
+name: RelayQuay checks
 
 on:
   pull_request:
+    paths:
+      - relayquay/**
+      - .github/workflows/relayquay-checks.yml
   push:
     branches:
       - main
+    paths:
+      - relayquay/**
+      - .github/workflows/relayquay-checks.yml
 
 jobs:
   shell-and-compose:
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: relayquay
     steps:
       - uses: actions/checkout@v4
 
@@ -26,7 +35,7 @@ jobs:
         run: terraform fmt -check -recursive infra/cloudflare/terraform
 
       - name: Validate Terraform reference
-        working-directory: infra/cloudflare/terraform
+        working-directory: relayquay/infra/cloudflare/terraform
         run: |
           terraform init -backend=false
           terraform validate
