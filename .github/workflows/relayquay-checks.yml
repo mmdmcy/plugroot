@@ -15,16 +15,15 @@ on:
 jobs:
   shell-and-compose:
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: relayquay
     steps:
       - uses: actions/checkout@v4
 
       - name: Check helper syntax
+        working-directory: relayquay
         run: bash -n bin/relayquay
 
       - name: Render default compose config
+        working-directory: relayquay
         run: |
           cp .env.example /tmp/relayquay.env
           RELAYQUAY_ENV_FILE=/tmp/relayquay.env ./bin/relayquay config >/tmp/relayquay-compose.yaml
@@ -32,6 +31,7 @@ jobs:
       - uses: hashicorp/setup-terraform@v3
 
       - name: Check Terraform formatting
+        working-directory: relayquay
         run: terraform fmt -check -recursive infra/cloudflare/terraform
 
       - name: Validate Terraform reference
