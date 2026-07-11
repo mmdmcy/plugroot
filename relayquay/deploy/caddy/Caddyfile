@@ -1,0 +1,24 @@
+{
+	auto_https off
+	admin off
+}
+
+http://:{$RELAYQUAY_LISTEN_PORT:8788} {
+	bind {$RELAYQUAY_BIND:127.0.0.1}
+
+	@health path /healthz /.well-known/relayquay
+	header @health {
+		X-Content-Type-Options nosniff
+		Referrer-Policy no-referrer
+		Permissions-Policy "camera=(), microphone=(), geolocation=()"
+	}
+	handle @health {
+		respond "relayquay ok" 200
+	}
+
+	reverse_proxy {$ROV_UPSTREAM:127.0.0.1:45080} {
+		header_up Host {host}
+		header_up X-Real-IP {remote_host}
+		header_up X-Forwarded-Proto https
+	}
+}

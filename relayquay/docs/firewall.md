@@ -1,38 +1,27 @@
 # Firewall
 
 RelayQuay does not automatically change the host firewall. Firewall policy is
-host-specific and a bad rule can lock you out or break private clients.
+host-specific and a bad rule can lock you out.
 
 The intended policy is:
 
 - Allow outbound `cloudflared` traffic to Cloudflare.
-- Allow loopback access to the Caddy gateway on `127.0.0.1:8788`.
-- Allow RustDesk raw ports only from private networks you trust.
-- Deny public access to `21115-21119/tcp` and `21116/udp`.
-
-## RustDesk Ports
-
-```text
-21115/tcp       NAT type test
-21116/tcp+udp   rendezvous, heartbeat, and TCP hole punching
-21117/tcp       relay
-21118/tcp       hbbs WebSocket
-21119/tcp       hbbr WebSocket
-```
+- Allow loopback access to Caddy on `127.0.0.1:8788`.
+- Keep RustOp Viewer on `127.0.0.1:45080` by default.
+- Do not publish ROV directly on public interfaces.
 
 ## UFW Sketch
 
-Adjust the source networks before applying:
+Most single-host installs need no inbound public rule for RelayQuay because
+Cloudflare Tunnel is outbound-only. You can still document explicit denials:
 
 ```bash
-sudo ufw allow in on tailscale0 to any port 21115:21119 proto tcp
-sudo ufw allow in on tailscale0 to any port 21116 proto udp
-sudo ufw allow from 192.168.0.0/16 to any port 21115:21119 proto tcp
-sudo ufw allow from 192.168.0.0/16 to any port 21116 proto udp
-
-sudo ufw deny 21115:21119/tcp
-sudo ufw deny 21116/udp
+sudo ufw deny 8788/tcp
+sudo ufw deny 45080/tcp
 ```
+
+If you deliberately expose ROV to a private interface, allow only that trusted
+interface or network.
 
 ## nftables Example
 

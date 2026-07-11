@@ -1,0 +1,32 @@
+name: checks
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  shell-and-compose:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check helper syntax
+        run: bash -n bin/relayquay
+
+      - name: Render default compose config
+        run: |
+          cp .env.example /tmp/relayquay.env
+          RELAYQUAY_ENV_FILE=/tmp/relayquay.env ./bin/relayquay config >/tmp/relayquay-compose.yaml
+
+      - uses: hashicorp/setup-terraform@v3
+
+      - name: Check Terraform formatting
+        run: terraform fmt -check -recursive infra/cloudflare/terraform
+
+      - name: Validate Terraform reference
+        working-directory: infra/cloudflare/terraform
+        run: |
+          terraform init -backend=false
+          terraform validate

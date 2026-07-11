@@ -1,0 +1,15 @@
+cloudflare_account_id = "00000000000000000000000000000000"
+cloudflare_zone_id    = "00000000000000000000000000000000"
+tunnel_id             = "00000000-0000-0000-0000-000000000000"
+
+public_hostname = "relayquay-public.example.com"
+origin_service  = "http://localhost:8788"
+
+# Leave empty when the public hostname should show only the cover response.
+# If Access is required, use a separate protected hostname, not public_hostname.
+access_application_domain = "relayquay-private.example.com"
+create_access_dns_record  = true
+
+allowed_emails = [
+  "operator@example.com",
+]
