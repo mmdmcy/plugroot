@@ -11,8 +11,8 @@ Plugroot is private-first.
 - Actions are allowlisted per service.
 - Plugroot does not run arbitrary commands from the dashboard or TUI.
 - The code root is a Git checkout and should contain reusable code only.
-- The state root is local-only private machine state and defaults to
-  `/var/lib/plugroot`.
+- The state root is local-only private machine state and defaults to a sibling
+  `../plugroot-state` directory unless configured.
 - Real `.env` files, local overlays, generated units, cloned app repos, logs,
   databases, backups, and service data belong in the state root.
 - `plugroot audit-public` checks tracked files for ignored private paths,

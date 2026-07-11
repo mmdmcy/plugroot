@@ -21,6 +21,7 @@ plugroot doctor
 plugroot release-check
 plugroot tui
 plugroot apply --dry-run
+plugroot repos sync
 plugroot up example-web
 plugroot logs example-web
 ```
@@ -56,6 +57,33 @@ restarting an important service. It fails when the code/state boundary is not
 clean, tracked files fail the public audit, the Plugroot checkout is dirty, or a
 manifest-managed repo checkout has uncommitted changes.
 
+## Emergency Export
+
+Before a reinstall, disk migration, or state-root move, create a manual
+encrypted rescue bundle:
+
+```bash
+plugroot backup check
+plugroot backup
+```
+
+Use `plugroot backup /media/$USER/USB` when writing directly to a mounted
+external disk. See `docs/emergency.md` for passphrase guidance, restore notes,
+and the exact capture scope.
+
+To inspect a backup from another machine:
+
+```bash
+plugroot restore check /media/$USER/USB
+```
+
+To restore a fresh host after prerequisites are installed:
+
+```bash
+plugroot restore /media/$USER/USB
+plugroot restore finish
+```
+
 ## Applying Changes
 
 Before a real `plugroot apply`, run:
@@ -69,3 +97,8 @@ plugroot apply --dry-run
 The dry run should show only the files, directories, repos, and units you expect
 to touch. Host-specific files copied by `apply` should come from the private
 state root, not from the public checkout.
+
+By default, `plugroot apply` skips repository network updates. Use
+`plugroot repos sync` when you want to clone, fetch, or pull managed repos, or
+`plugroot apply --sync-repos` when you intentionally want syncing combined with
+an apply.

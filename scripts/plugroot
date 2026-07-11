@@ -9,8 +9,12 @@ if [ ! -x "$bin" ]; then
   exit 127
 fi
 
-if [ "$(id -u)" -ne 0 ] && [ "${1:-}" = "tui" ] && command -v sudo >/dev/null 2>&1; then
-  exec sudo "$bin" --root "$root" "$@"
+if [ "$(id -u)" -ne 0 ] && command -v sudo >/dev/null 2>&1; then
+  case "${1:-}" in
+    apply|up|down|restart|logs|tui|backup|restore|emergency)
+      exec sudo "$bin" --root "$root" "$@"
+      ;;
+  esac
 fi
 
 exec "$bin" --root "$root" "$@"

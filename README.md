@@ -22,6 +22,7 @@ cargo run -- status
 cargo run -- doctor
 cargo run -- boundary --strict
 cargo run -- apply --dry-run
+cargo run -- repos sync
 cargo run -- tui
 ```
 
@@ -36,9 +37,9 @@ plugroot tui
 For a real host, keep private values outside the checkout:
 
 ```bash
-sudo install -d -o "$USER" -g "$USER" -m 700 /var/lib/plugroot
-cp .env.example /var/lib/plugroot/.env
-cp plugroot.local.example.toml /var/lib/plugroot/plugroot.local.toml
+sudo install -d -o "$USER" -g "$USER" -m 700 /opt/plugroot-state
+cp .env.example /opt/plugroot-state/.env
+cp plugroot.local.example.toml /opt/plugroot-state/plugroot.local.toml
 ```
 
 Build a release binary:
@@ -66,10 +67,13 @@ can replace or add entries with the same `id` for one machine.
 ```text
 plugroot status [--json]
 plugroot list
-plugroot apply [--dry-run]
+plugroot apply [--dry-run] [--sync-repos]
 plugroot repos sync
 plugroot doctor [--json] [--strict]
 plugroot release-check
+plugroot backup [check] [directory]
+plugroot restore [check|finish] [directory-or-archive]
+plugroot emergency export --output <directory> --yes
 plugroot up|down|restart|logs <service|all>
 plugroot tui [--once]
 plugroot web [--bind <addr:port>]
@@ -82,6 +86,8 @@ plugroot audit-public [--install-hook]
 - Neutral Compose stack bound to `PLUGROOT_PRIVATE_IP`.
 - Git checkout and systemd examples in `docs/manifest.md`.
 - Operator command conventions and health checks in `docs/operations.md`.
+- Manual encrypted emergency exports in `docs/emergency.md`.
+- Fresh-install and standby-server recovery in `docs/restore.md`.
 - Plugroot Web as a local private dashboard.
 - Optional Plugroot Web Basic auth through `PLUGROOT_WEB_USER` and
   `PLUGROOT_WEB_PASSWORD`.
@@ -92,7 +98,7 @@ Use two roots:
 
 ```text
 code root   Git checkout, safe to push, no private machine state
-state root  local-only runtime state, no Git repo, default /var/lib/plugroot
+state root  local-only runtime state, no Git repo, default sibling of the code root
 ```
 
 Real secrets and private state are ignored by default:
@@ -123,6 +129,7 @@ Before publishing changes:
 ```bash
 cargo fmt --check
 cargo test
+cargo katrust check
 plugroot audit-public
 plugroot boundary --strict
 plugroot release-check

@@ -20,12 +20,14 @@ under the private state root, not in the Git checkout. Code-root
 
 ```toml
 [plugroot]
-state_root = "${PLUGROOT_STATE_ROOT:-/var/lib/plugroot}"
-repo_dir = "${PLUGROOT_REPO_DIR:-/var/lib/plugroot/repos}"
+state_root = "${PLUGROOT_STATE_ROOT:-../plugroot-state}"
+repo_dir = "${PLUGROOT_REPO_DIR:-../plugroot-state/repos}"
 ```
 
-`state_root` is local-only machine state. `repo_dir` is where Plugroot-managed
-app repos are cloned. Both should be outside the Plugroot code checkout.
+`state_root` is local-only machine state. Its default is a sibling
+`../plugroot-state` directory relative to the code root. `repo_dir` is where
+Plugroot-managed app repos are cloned. Both should be outside the Plugroot code
+checkout.
 
 ## Repos
 
@@ -33,7 +35,7 @@ app repos are cloned. Both should be outside the Plugroot code checkout.
 [[repo]]
 id = "example-app"
 url = "https://github.com/example/example-app.git"
-path = "${PLUGROOT_REPO_DIR:-/var/lib/plugroot/repos}/example-app"
+path = "${PLUGROOT_REPO_DIR:-../plugroot-state/repos}/example-app"
 ref = "main"
 ```
 
@@ -45,7 +47,7 @@ ref = "main"
 
 ```toml
 [[directory]]
-path = "${PLUGROOT_STATE_ROOT:-/var/lib/plugroot}/services/example/data"
+path = "${PLUGROOT_STATE_ROOT:-../plugroot-state}/services/example/data"
 owner = "plugroot:plugroot"
 mode = "0755"
 
@@ -81,7 +83,7 @@ Compose services use the state-root `.env` automatically when it exists. A
 service can override that with:
 
 ```toml
-env_file = "${PLUGROOT_STATE_ROOT:-/var/lib/plugroot}/services/example/.env"
+env_file = "${PLUGROOT_STATE_ROOT:-../plugroot-state}/services/example/.env"
 ```
 
 ## Generated Units
@@ -92,7 +94,7 @@ A `systemd` or `user-systemd` service with `command` can generate a unit:
 kind = "user-systemd"
 unit = "example-app.service"
 user = "${PLUGROOT_USER:-plugroot}"
-working_dir = "${PLUGROOT_REPO_DIR:-/var/lib/plugroot/repos}/example-app"
+working_dir = "${PLUGROOT_REPO_DIR:-../plugroot-state/repos}/example-app"
 command = ["/usr/bin/python3", "server.py"]
 ```
 
@@ -104,4 +106,6 @@ unit = "example.service"
 unit_source = "systemd/example.service"
 ```
 
-Use `plugroot apply --dry-run` before writing or installing anything.
+Use `plugroot apply --dry-run` before writing or installing anything. Repository
+updates are separate by default; run `plugroot repos sync` when you actually
+want to clone, fetch, or pull managed repos.
