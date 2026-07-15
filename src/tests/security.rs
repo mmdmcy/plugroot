@@ -2,7 +2,8 @@ use crate::features::doctor::{
     add_tcp_ports_from_descriptor, broad_ufw_allow_rules, unexpected_wildcard_tcp_listeners,
 };
 use crate::security::audit::{
-    audit_path, contains_tailscale_ipv4, contains_token_marker, suspicious_secret_assignment,
+    audit_path, contains_denylist_term, contains_tailscale_ipv4, contains_token_marker,
+    suspicious_secret_assignment,
 };
 use std::collections::HashSet;
 
@@ -44,6 +45,17 @@ fn audit_rejects_private_paths() {
     assert!(audit_path("docs/private/notes.md").is_some());
     assert!(audit_path("service/data/state.db").is_some());
     assert!(audit_path(".env.example").is_none());
+}
+
+#[test]
+fn audit_denylist_identifiers_require_boundaries() {
+    assert!(contains_denylist_term("workspace/sam/project", "sam"));
+    assert!(contains_denylist_term("host=SAM", "sam"));
+    assert!(!contains_denylist_term("sample configuration", "sam"));
+    assert!(contains_denylist_term(
+        "origin=https://private.example.test/repo",
+        "private.example.test"
+    ));
 }
 
 #[test]

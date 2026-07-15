@@ -190,12 +190,50 @@ pub(crate) fn load_audit_denylist(root: &Path) -> Vec<String> {
             terms.push(term.to_ascii_lowercase());
         }
     }
+    terms.sort();
+    terms.dedup();
     terms
+}
+
+pub(crate) fn contains_denylist_term(line: &str, term: &str) -> bool {
+    if term.is_empty() {
+        return false;
+    }
+
+    let lower = line.to_ascii_lowercase();
+    if !term
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-'))
+    {
+        return lower.contains(term);
+    }
+
+    let mut offset = 0;
+    while let Some(relative_start) = lower[offset..].find(term) {
+        let start = offset + relative_start;
+        let end = start + term.len();
+        let left_is_identifier = lower[..start]
+            .chars()
+            .next_back()
+            .is_some_and(denylist_identifier_char);
+        let right_is_identifier = lower[end..]
+            .chars()
+            .next()
+            .is_some_and(denylist_identifier_char);
+        if !left_is_identifier && !right_is_identifier {
+            return true;
+        }
+        offset = end;
+    }
+    false
+}
+
+fn denylist_identifier_char(ch: char) -> bool {
+    ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-')
 }
 
 pub(crate) fn audit_line(line: &str, private_terms: &[String]) -> Vec<String> {
     let mut findings = Vec::new();
-    let lower = line.to_ascii_lowercase();
     let trimmed = line.trim_start();
     if trimmed.starts_with('#') {
         return findings;
@@ -216,7 +254,7 @@ pub(crate) fn audit_line(line: &str, private_terms: &[String]) -> Vec<String> {
         findings.push("non-placeholder secret-looking assignment".into());
     }
     for term in private_terms {
-        if !term.is_empty() && lower.contains(term) {
+        if contains_denylist_term(line, term) {
             findings.push("local denylist term".into());
         }
     }

@@ -155,3 +155,7 @@ the public repo, add one term per line to an ignored denylist:
 ```text
 $PLUGROOT_STATE_ROOT/.plugroot/audit-denylist.txt
 ```
+
+Plain identifier terms match only at identifier boundaries, so a short name
+does not accidentally match a longer ordinary word. Terms containing dots,
+slashes, or other punctuation remain literal substring checks.
