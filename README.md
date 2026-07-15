@@ -62,6 +62,11 @@ $PLUGROOT_STATE_ROOT/plugroot.local.toml  private local overlay
 The public manifest can define reusable services and repos. The private overlay
 can replace or add entries with the same `id` for one machine.
 
+Application source stays in standalone repositories under `repo_dir`; it is not
+vendored into Plugroot. When an application has its own mode-aware lifecycle
+helper, Plugroot can sync its checkout and monitor its port while that helper
+remains responsible for start, stop, and mode transitions.
+
 ## Commands
 
 ```text
@@ -85,6 +90,8 @@ plugroot audit-public [--install-hook]
 
 - Neutral Compose stack bound to `PLUGROOT_PRIVATE_IP`.
 - Git checkout and systemd examples in `docs/manifest.md`.
+- Standalone helper-managed application pattern, including RelayQuay, in
+  `docs/manifest.md`.
 - Operator command conventions and health checks in `docs/operations.md`.
 - Manual encrypted emergency exports in `docs/emergency.md`.
 - Fresh-install and standby-server recovery in `docs/restore.md`.

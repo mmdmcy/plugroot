@@ -41,6 +41,52 @@ ref = "main"
 
 `plugroot repos sync` clones missing repos and fetches/pulls existing ones.
 
+### Standalone Helper-Managed Applications
+
+Keep application source in its own repository instead of vendoring it into
+Plugroot. Register the checkout with `[[repo]]`, then use a manual service when
+the application has a helper that owns runtime modes or non-default Compose
+overlays.
+
+RelayQuay is one example:
+
+```toml
+[[repo]]
+id = "relayquay"
+url = "https://github.com/mmdmcy/RelayQuay.git"
+path = "<absolute-path-to-relayquay-checkout>"
+ref = "main"
+
+[[service]]
+id = "relayquay"
+name = "RelayQuay RustOpViewer Gateway"
+plane = "public-authenticated"
+category = "remote-access"
+kind = "manual"
+host = "127.0.0.1"
+port = 8788
+repo = "relayquay"
+url = "https://rov.example.com/healthz"
+access = "Cloudflare Access allowlist"
+description = "Standalone gateway monitored by Plugroot."
+controls = []
+ports = [
+  "8788/tcp loopback gateway",
+  "45080/tcp loopback app upstream",
+]
+optional = true
+```
+
+Use an absolute repo path in the private overlay. Managed repo paths currently
+resolve from the Plugroot process working directory, so a relative path can
+refer to different locations depending on how Plugroot was launched.
+
+Run `plugroot repos sync` to update the checkout. Use RelayQuay's own
+`bin/relayquay` helper for `doctor`, `activate`, `cover`, `pause`, and runtime
+logs; Plugroot deliberately exposes no lifecycle controls for this manual
+monitor. RelayQuay maintains a complete private-overlay example in its
+[Plugroot integration file](https://github.com/mmdmcy/RelayQuay/blob/main/examples/plugroot/plugroot.local.example.toml).
+
 ## Managed Directories And Files
 
 `plugroot apply` can prepare directories and copy local template files:
