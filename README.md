@@ -98,6 +98,13 @@ plugroot audit-public [--install-hook]
 - Plugroot Web as a local private dashboard.
 - Optional Plugroot Web Basic auth through `PLUGROOT_WEB_USER` and
   `PLUGROOT_WEB_PASSWORD`.
+- Minimal unauthenticated component health at
+  `/.well-known/linuxmice/component`; it exposes no service inventory, state
+  paths, repository details, or credentials.
+
+`linuxmice-component.toml` is the canonical optional catalog declaration for
+that status surface. Plugroot does not require LinuxMice to run and LinuxMice
+does not read Plugroot's private manifest or runtime state.
 
 ## Safety
 

@@ -95,6 +95,10 @@ pub(crate) fn handle_http(ctx: Context, mut stream: TcpStream) -> io::Result<()>
             "plugroot_session=; Max-Age=0; Path=/; HttpOnly; SameSite=Lax",
         );
     }
+    if method == "GET" && path == "/.well-known/linuxmice/component" {
+        let body = serde_json::to_vec_pretty(&component_status_json(&web_request))?;
+        return http_response(&mut stream, 200, "application/json", &body);
+    }
 
     if !web_authorized(&ctx, &web_request) {
         if method == "GET" && path == "/" {
@@ -138,6 +142,52 @@ pub(crate) fn handle_http(ctx: Context, mut stream: TcpStream) -> io::Result<()>
         return http_response(&mut stream, code, "text/plain", out.text.as_bytes());
     }
     http_response(&mut stream, 404, "text/plain", b"not found")
+}
+
+pub(crate) fn component_status_json(request: &WebRequest) -> serde_json::Value {
+    serde_json::json!({
+        "schema_version": "linuxmice.response.v1",
+        "component": "katteke.plugroot",
+        "operation": "status",
+        "outcome": "success",
+        "data": {
+            "status": "ready",
+            "version": env!("CARGO_PKG_VERSION"),
+            "standalone": true,
+            "capabilities": [
+                "selfhost.manifest",
+                "selfhost.lifecycle",
+                "selfhost.backup",
+                "selfhost.restore"
+            ]
+        },
+        "warnings": [],
+        "error": null,
+        "correlation_id": component_correlation_id(request)
+    })
+}
+
+fn component_correlation_id(request: &WebRequest) -> String {
+    if let Some(value) = request
+        .headers
+        .iter()
+        .find(|(name, _)| name == "x-correlation-id")
+        .map(|(_, value)| value)
+        .filter(|value| {
+            !value.is_empty()
+                && value.len() <= 128
+                && value
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || b"-_.:".contains(&byte))
+        })
+    {
+        return value.clone();
+    }
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default();
+    format!("plugroot-{}-{nanos}", std::process::id())
 }
 
 pub(crate) fn read_http_body(stream: &mut TcpStream, data: &mut Vec<u8>) -> io::Result<()> {

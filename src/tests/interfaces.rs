@@ -2,7 +2,7 @@ use crate::app::{Context, Manifest};
 use crate::features::status::StatusRow;
 use crate::interfaces::{
     tui::{fit_window, tui_content_width, visible_rows, TuiApp},
-    web::{render_web_service, render_web_service_lists},
+    web::{component_status_json, render_web_service, render_web_service_lists, WebRequest},
 };
 use std::collections::HashMap;
 use std::fs;
@@ -137,4 +137,21 @@ fn web_service_lists_put_unlinked_services_at_the_bottom() {
     assert!(linked_position < unlinked_heading);
     assert!(unlinked_heading < unlinked_position);
     assert!(html.contains("Status-only services"));
+}
+
+#[test]
+fn component_status_is_minimal_versioned_and_safe_without_auth() {
+    let request = WebRequest {
+        method: "GET".into(),
+        path: "/.well-known/linuxmice/component".into(),
+        headers: vec![("x-correlation-id".into(), "pilot:request-42".into())],
+        body: String::new(),
+    };
+
+    let status = component_status_json(&request);
+    assert_eq!(status["schema_version"], "linuxmice.response.v1");
+    assert_eq!(status["component"], "katteke.plugroot");
+    assert_eq!(status["operation"], "status");
+    assert_eq!(status["correlation_id"], "pilot:request-42");
+    assert!(status["data"].get("services").is_none());
 }
