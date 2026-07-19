@@ -15,8 +15,8 @@ mod security;
 mod shared;
 
 use app::{
-    load_env_file, load_manifest_file, merge_manifest, Context, ManagedDir, ManagedFile, Manifest,
-    Repo, Service,
+    load_env_file, load_manifest_file, merge_manifest, Context, ManagedDir, ManagedFile,
+    ManagedSymlink, Manifest, Repo, Service,
 };
 use features::{
     absolute_clean_path, broad_ufw_allow_rules, cmd_action, cmd_apply, cmd_backup, cmd_doctor,

@@ -105,6 +105,33 @@ mode = "0644"
 
 Use state-root local overlays for host-specific files and paths.
 
+## Workspace Private State And Symlinks
+
+Keep ignored credentials and other private workspace state under one canonical
+state-root folder, then project them into application checkouts with managed
+symlinks. Declare host-specific targets in the private local overlay:
+
+```toml
+[[directory]]
+path = "${PLUGROOT_STATE_ROOT:-../plugroot-state}/workspaces/example-app"
+mode = "0700"
+
+[[symlink]]
+source = "${PLUGROOT_STATE_ROOT:-../plugroot-state}/workspaces/example-app/.env"
+target = "${EXAMPLE_APP_REPO}/.env"
+```
+
+Create or migrate the source file before applying the manifest. The source must
+exist inside the state root. The target parent must already exist, and targets
+inside Git checkouts must be ignored. `plugroot apply` is idempotent when the
+correct link already exists and refuses to replace regular files or conflicting
+links.
+
+This keeps one private source of truth under the state root while applications
+can continue reading files from their usual paths. Emergency exports already
+include the complete state root, so the linked private state travels with the
+rest of Plugroot without copying Git worktrees or build output.
+
 ## Services
 
 Supported service kinds:

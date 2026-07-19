@@ -1,20 +1,25 @@
 use crate::ensure_success;
 use crate::is_root;
+use crate::nearest_git_root;
 use crate::print_cmd_output;
 use crate::resolve_path;
 use crate::run_command;
 use crate::run_prefixed_command;
+use crate::same_or_inside;
 use crate::user_home;
 use crate::user_systemd_prefix;
 use crate::Context;
 use crate::ManagedDir;
 use crate::ManagedFile;
+use crate::ManagedSymlink;
 use crate::Path;
 use crate::PathBuf;
 use crate::Repo;
 use crate::Service;
 use std::fs;
 use std::io;
+use std::os::unix::fs::symlink;
+use std::process::Command;
 
 mod types;
 
@@ -100,6 +105,18 @@ pub(crate) fn cmd_apply(ctx: &Context, args: &[String]) -> io::Result<u8> {
             }
         } else {
             println!("skipping repo sync {} -> {}", repo.id, repo.path);
+        }
+    }
+
+    for managed_symlink in &ctx.manifest.symlink {
+        println!(
+            "{} symlink {} -> {}",
+            if dry_run { "would create" } else { "creating" },
+            managed_symlink.target,
+            managed_symlink.source
+        );
+        if !dry_run {
+            apply_symlink(ctx, managed_symlink)?;
         }
     }
 
@@ -250,6 +267,110 @@ pub(crate) fn apply_file(ctx: &Context, file: &ManagedFile) -> io::Result<()> {
     }
     fs::copy(&source, &target)?;
     apply_owner_mode(&target, file.owner.as_deref(), file.mode.as_deref())
+}
+
+pub(crate) fn apply_symlink(ctx: &Context, managed_symlink: &ManagedSymlink) -> io::Result<()> {
+    let state_root = fs::canonicalize(ctx.state_root()).map_err(|err| {
+        io::Error::new(
+            err.kind(),
+            format!(
+                "canonicalize state root {}: {err}",
+                ctx.state_root().display()
+            ),
+        )
+    })?;
+    let requested_source = resolve_path(&ctx.root, &managed_symlink.source);
+    let source = fs::canonicalize(&requested_source).map_err(|err| {
+        io::Error::new(
+            err.kind(),
+            format!(
+                "canonicalize symlink source {}: {err}",
+                requested_source.display()
+            ),
+        )
+    })?;
+    if !same_or_inside(&state_root, &source) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "symlink source {} must be inside state root {}",
+                source.display(),
+                state_root.display()
+            ),
+        ));
+    }
+
+    let target = resolve_path(&ctx.root, &managed_symlink.target);
+    let parent = target.parent().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("symlink target {} has no parent", target.display()),
+        )
+    })?;
+    if !parent.is_dir() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!(
+                "symlink target parent {} does not exist; create or sync it first",
+                parent.display()
+            ),
+        ));
+    }
+
+    if let Some(git_root) = nearest_git_root(parent) {
+        let relative_target = target.strip_prefix(&git_root).map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "symlink target {} could not be resolved inside Git checkout {}",
+                    target.display(),
+                    git_root.display()
+                ),
+            )
+        })?;
+        let ignored = Command::new("git")
+            .arg("-C")
+            .arg(&git_root)
+            .args(["check-ignore", "--quiet", "--"])
+            .arg(relative_target)
+            .status()?;
+        if !ignored.success() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "symlink target {} is inside a Git checkout but is not ignored",
+                    target.display()
+                ),
+            ));
+        }
+    }
+
+    match fs::symlink_metadata(&target) {
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            let existing = fs::read_link(&target)?;
+            let existing = if existing.is_absolute() {
+                existing
+            } else {
+                parent.join(existing)
+            };
+            if fs::canonicalize(existing).ok().as_ref() == Some(&source) {
+                return Ok(());
+            }
+            Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                format!(
+                    "refusing to replace conflicting symlink {}",
+                    target.display()
+                ),
+            ))
+        }
+        Ok(_) => Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            format!("refusing to replace existing path {}", target.display()),
+        )),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => symlink(source, target),
+        Err(err) => Err(err),
+    }
 }
 
 pub(crate) fn apply_owner_mode(

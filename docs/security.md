@@ -14,7 +14,8 @@ Plugroot is private-first.
 - The state root is local-only private machine state and defaults to a sibling
   `../plugroot-state` directory unless configured.
 - Real `.env` files, local overlays, generated units, cloned app repos, logs,
-  databases, backups, and service data belong in the state root.
+  databases, backups, service data, and private workspace files belong in the
+  state root.
 - `plugroot audit-public` checks tracked files for ignored private paths,
   common secret markers, private key material, Tailscale-style private IPs,
   and optional local denylist terms.
@@ -43,12 +44,18 @@ private state root
   -> plugroot.local.toml
   -> repos/
   -> services/*/data/
+  -> workspaces/*/
   -> backups/
 ```
 
 The selfhost checkout is still code-only. Pulling updates there should never
 move private files into Git scope. If a file is specific to one host, it belongs
 under the state root, not beside `plugroot.toml`.
+
+Applications that require private files inside their checkout can use managed
+symlinks from `workspaces/` under the state root. Plugroot requires the source
+to remain inside the state root and requires Git targets to be ignored before
+creating a link.
 
 ## Network Boundary
 

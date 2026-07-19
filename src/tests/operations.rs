@@ -1,6 +1,6 @@
-use crate::app::{Context, Manifest, PlugrootConfig, Service};
+use crate::app::{Context, ManagedSymlink, Manifest, PlugrootConfig, Service};
 use crate::features::{
-    apply::{generate_unit, parse_apply_options, ApplyOptions},
+    apply::{apply_symlink, generate_unit, parse_apply_options, ApplyOptions},
     backup::{
         emergency_tar_excludes, parse_emergency_export_options, parse_simple_backup_args,
         sanitize_filename_component, tar_relative_path, validate_emergency_output_boundary,
@@ -12,6 +12,7 @@ use crate::features::{
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::time::Duration;
 
 #[test]
@@ -68,6 +69,121 @@ fn apply_options_keep_repo_sync_explicit() {
         }
     );
     assert!(parse_apply_options(&["--pull".into()]).is_err());
+}
+
+#[test]
+fn managed_symlink_projects_ignored_state_into_git_checkout() {
+    let code = tempfile::tempdir().unwrap();
+    let state = tempfile::tempdir().unwrap();
+    let checkout = code.path().join("example-app");
+    fs::create_dir(&checkout).unwrap();
+    assert!(Command::new("git")
+        .args(["init", "--quiet"])
+        .current_dir(&checkout)
+        .status()
+        .unwrap()
+        .success());
+    fs::write(checkout.join(".gitignore"), ".env*\n").unwrap();
+
+    let workspace = state.path().join("workspaces/example-app");
+    fs::create_dir_all(&workspace).unwrap();
+    let source = workspace.join(".env");
+    fs::write(&source, "private fixture\n").unwrap();
+    let target = checkout.join(".env");
+    let ctx = Context {
+        root: code.path().to_path_buf(),
+        manifest: Manifest {
+            plugroot: Some(PlugrootConfig {
+                code_root: None,
+                root: None,
+                state_root: Some(state.path().display().to_string()),
+                repo_dir: None,
+            }),
+            ..Manifest::default()
+        },
+        env_values: HashMap::new(),
+    };
+    let managed_symlink = ManagedSymlink {
+        source: source.display().to_string(),
+        target: target.display().to_string(),
+    };
+
+    apply_symlink(&ctx, &managed_symlink).unwrap();
+    apply_symlink(&ctx, &managed_symlink).unwrap();
+
+    assert!(fs::symlink_metadata(&target)
+        .unwrap()
+        .file_type()
+        .is_symlink());
+    assert_eq!(
+        fs::canonicalize(target).unwrap(),
+        fs::canonicalize(source).unwrap()
+    );
+
+    let existing_target = checkout.join(".env.local");
+    fs::write(&existing_target, "keep this file\n").unwrap();
+    let existing_path = ManagedSymlink {
+        source: managed_symlink.source.clone(),
+        target: existing_target.display().to_string(),
+    };
+    assert_eq!(
+        apply_symlink(&ctx, &existing_path).unwrap_err().kind(),
+        std::io::ErrorKind::AlreadyExists
+    );
+    assert_eq!(
+        fs::read_to_string(existing_target).unwrap(),
+        "keep this file\n"
+    );
+}
+
+#[test]
+fn managed_symlink_refuses_unignored_or_external_private_state() {
+    let code = tempfile::tempdir().unwrap();
+    let state = tempfile::tempdir().unwrap();
+    let checkout = code.path().join("example-app");
+    fs::create_dir(&checkout).unwrap();
+    assert!(Command::new("git")
+        .args(["init", "--quiet"])
+        .current_dir(&checkout)
+        .status()
+        .unwrap()
+        .success());
+
+    let source = state.path().join("secret.env");
+    fs::write(&source, "private fixture\n").unwrap();
+    let ctx = Context {
+        root: code.path().to_path_buf(),
+        manifest: Manifest {
+            plugroot: Some(PlugrootConfig {
+                code_root: None,
+                root: None,
+                state_root: Some(state.path().display().to_string()),
+                repo_dir: None,
+            }),
+            ..Manifest::default()
+        },
+        env_values: HashMap::new(),
+    };
+    let unignored = ManagedSymlink {
+        source: source.display().to_string(),
+        target: checkout.join("secret.env").display().to_string(),
+    };
+    assert_eq!(
+        apply_symlink(&ctx, &unignored).unwrap_err().kind(),
+        std::io::ErrorKind::InvalidInput
+    );
+
+    fs::write(checkout.join(".gitignore"), ".env\n").unwrap();
+    let external = code.path().join("external.env");
+    fs::write(&external, "private fixture\n").unwrap();
+    let outside_state = ManagedSymlink {
+        source: external.display().to_string(),
+        target: checkout.join(".env").display().to_string(),
+    };
+    assert_eq!(
+        apply_symlink(&ctx, &outside_state).unwrap_err().kind(),
+        std::io::ErrorKind::InvalidInput
+    );
 }
 
 #[test]

@@ -53,7 +53,13 @@ plugroot.local.toml          -> /opt/plugroot-state/plugroot.local.toml
 repos/                       -> /opt/plugroot-state/repos/
 services/*/data/             -> /opt/plugroot-state/services/*/data/
 backups/                     -> /opt/plugroot-state/backups/
+app checkout private files   -> /opt/plugroot-state/workspaces/<app>/
 ```
+
+For an ignored file that an application expects inside its checkout, move the
+real file into `workspaces/<app>/` under the state root and declare a managed
+`[[symlink]]` in the private local overlay. Plugroot will not move or overwrite
+the original automatically; this keeps migration explicit and recoverable.
 
 For older hosts, `/var/lib/plugroot` can remain as a compatibility symlink to
 `/opt/plugroot-state`.

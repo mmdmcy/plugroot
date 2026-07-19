@@ -150,6 +150,16 @@ pub(crate) fn boundary_findings(ctx: &Context) -> io::Result<Vec<BoundaryFinding
         }
     }
 
+    for managed_symlink in &ctx.manifest.symlink {
+        let source = clean_path(&resolve_path(&ctx.root, &managed_symlink.source));
+        if !same_or_inside(&state_root, &source) {
+            findings.push(BoundaryFinding::error(
+                Some(source),
+                "managed symlink source must live inside the state root",
+            ));
+        }
+    }
+
     for rel in [
         ".env",
         "plugroot.local.toml",

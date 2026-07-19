@@ -47,6 +47,9 @@ pub(crate) fn merge_manifest(mut base: Manifest, overlay: Manifest) -> Manifest 
         &directory.path
     });
     merge_by_id(&mut base.file, overlay.file, |file| &file.target);
+    merge_by_id(&mut base.symlink, overlay.symlink, |symlink| {
+        &symlink.target
+    });
     merge_by_id(&mut base.service, overlay.service, |service| &service.id);
     base
 }

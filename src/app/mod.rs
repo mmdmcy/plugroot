@@ -8,4 +8,4 @@ pub(crate) use manifest::expand_vars;
 pub(crate) use manifest::{load_env_file, load_manifest_file, merge_manifest};
 #[cfg(test)]
 pub(crate) use types::PlugrootConfig;
-pub(crate) use types::{Context, ManagedDir, ManagedFile, Manifest, Repo, Service};
+pub(crate) use types::{Context, ManagedDir, ManagedFile, ManagedSymlink, Manifest, Repo, Service};

@@ -100,6 +100,8 @@ pub(crate) struct Manifest {
     #[serde(default)]
     pub(crate) file: Vec<ManagedFile>,
     #[serde(default)]
+    pub(crate) symlink: Vec<ManagedSymlink>,
+    #[serde(default)]
     pub(crate) service: Vec<Service>,
 }
 
@@ -140,6 +142,12 @@ pub(crate) struct ManagedFile {
     pub(crate) target: String,
     pub(crate) owner: Option<String>,
     pub(crate) mode: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub(crate) struct ManagedSymlink {
+    pub(crate) source: String,
+    pub(crate) target: String,
 }
 
 #[derive(Clone, Debug, Deserialize)]

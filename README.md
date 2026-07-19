@@ -115,6 +115,10 @@ code root   Git checkout, safe to push, no private machine state
 state root  local-only runtime state, no Git repo, default sibling of the code root
 ```
 
+Private application files can stay under `state-root/workspaces/` while managed
+symlinks expose them at the paths applications expect. This preserves one
+backup boundary without mixing secrets or mutable state into public Git code.
+
 Real secrets and private state are ignored by default:
 
 ```text

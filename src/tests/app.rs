@@ -27,6 +27,10 @@ id = "example"
 url = "https://example.invalid/repo.git"
 path = "/tmp/example"
 
+[[symlink]]
+source = "/var/lib/plugroot/workspaces/example/.env"
+target = "/tmp/example/.env"
+
 [[service]]
 id = "example"
 name = "Example"
@@ -40,6 +44,8 @@ port = 9
         Some("/var/lib/plugroot")
     );
     assert_eq!(parsed.repo.len(), 1);
+    assert_eq!(parsed.symlink.len(), 1);
+    assert_eq!(parsed.symlink[0].target, "/tmp/example/.env");
     assert_eq!(parsed.service[0].id, "example");
 }
 
