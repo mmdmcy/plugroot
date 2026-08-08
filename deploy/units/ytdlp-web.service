@@ -1,0 +1,27 @@
+# Tailnet yt-dlp web downloader (installed on selfhost hosts).
+# Adjust User=/Group= to the host account before installing:
+#   sed -i 's/@USER@/<user>/' ytdlp-web.service
+
+[Unit]
+Description=Tailnet yt-dlp web downloader
+After=network-online.target tailscale-online.target
+Wants=network-online.target tailscale-online.target
+
+[Service]
+Type=simple
+User=@USER@
+Group=@USER@
+WorkingDirectory=/opt/plugroot-state/services/ytdlp-web
+EnvironmentFile=/opt/plugroot-state/.env
+ExecStart=/bin/sh -ceu 'export YTDLP_WEB_BIND="${PLUGROOT_PRIVATE_IP:-127.0.0.1}:${YTDLP_WEB_PORT:-8790}" YTDLP_WEB_DB="/opt/plugroot-state/services/ytdlp-web/ytdlp_web.sqlite" YTDLP_WEB_DOWNLOAD_DIR="/opt/plugroot-state/media/inbox/ytdlp-web" YTDLP_WEB_AUTH_DISABLED=0; exec /opt/plugroot-state/releases/ytdlp-web/current/ytdlp-web serve'
+Restart=on-failure
+RestartSec=3
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/opt/plugroot-state/services/ytdlp-web /opt/plugroot-state/media/inbox/ytdlp-web
+
+[Install]
+WantedBy=multi-user.target

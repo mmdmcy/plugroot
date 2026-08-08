@@ -1,0 +1,101 @@
+name: selfhost
+
+# Selfhost stack for plugroot-managed hosts.
+# Secrets and per-host values live in /opt/plugroot-state/.env (gitignored),
+# referenced here via ${} interpolation. Run with:
+#
+#   docker compose --env-file /opt/plugroot-state/.env up -d
+#
+# plugroot (compose-kind services) picks up the state-root .env automatically.
+
+services:
+  forgejo:
+    image: codeberg.org/forgejo/forgejo:15
+    container_name: selfhost-forgejo
+    restart: unless-stopped
+    env_file: /opt/plugroot-state/.env
+    environment:
+      USER_UID: "1000"
+      USER_GID: "1000"
+      FORGEJO__server__SSH_PORT: "2222"
+      FORGEJO____APP_NAME: "${FORGEJO_APP_NAME:-Selfhost Forgejo}"
+      FORGEJO__server__DOMAIN: "${FORGEJO_DOMAIN}"
+      FORGEJO__server__ROOT_URL: "http://${FORGEJO_DOMAIN}:3000/"
+      FORGEJO__server__SSH_DOMAIN: "${FORGEJO_DOMAIN}"
+    ports:
+      - "${TAILNET_IP:-0.0.0.0}:3000:3000/tcp"
+      - "${TAILNET_IP:-0.0.0.0}:2222:22/tcp"
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+      - /opt/plugroot-state/services/forgejo/data:/data
+    labels:
+      plugroot.service: "forgejo"
+      plugroot.role: "git"
+
+  jellyfin:
+    image: jellyfin/jellyfin:10
+    container_name: selfhost-jellyfin
+    restart: unless-stopped
+    environment:
+      TZ: "${TZ:-Europe/Amsterdam}"
+      JELLYFIN_PublishedServerUrl: "${JELLYFIN_PUBLISHED_URL:-http://${PLUGROOT_HOSTNAME:-selfhost}:8096}"
+    ports:
+      - "0.0.0.0:8096:8096/tcp"
+      - "0.0.0.0:7359:7359/udp"
+    volumes:
+      - /opt/plugroot-state/services/jellyfin/config:/config
+      - /opt/plugroot-state/services/jellyfin/cache:/cache
+      - /opt/plugroot-state/media:/media
+    labels:
+      plugroot.service: "jellyfin"
+      plugroot.role: "media"
+
+  navidrome:
+    image: deluan/navidrome:latest
+    container_name: selfhost-navidrome
+    restart: unless-stopped
+    environment:
+      TZ: "${TZ:-Europe/Amsterdam}"
+      ND_LOGLEVEL: "info"
+      ND_SCANSCHEDULE: "1h"
+      ND_SESSIONTIMEOUT: "168h"
+      ND_MUSICFOLDER: "/music"
+      ND_DATAFOLDER: "/data"
+      ND_CONFIGFILE: "/data/navidrome.toml"
+      ND_PORT: "4533"
+    ports:
+      - "0.0.0.0:4533:4533/tcp"
+    volumes:
+      - /opt/plugroot-state/services/navidrome/data:/data
+      - /opt/plugroot-state/media/music:/music
+    labels:
+      plugroot.service: "navidrome"
+      plugroot.role: "music"
+
+  rustdesk-hbbs:
+    image: rustdesk/rustdesk-server:latest
+    container_name: rustdesk-hbbs
+    restart: unless-stopped
+    command: ["hbbs", "-r", "${RUSTDESK_RELAY:-${TAILNET_IP:-0.0.0.0}:21117}"]
+    volumes:
+      - /opt/plugroot-state/rustdesk/data:/data
+    ports:
+      - "${TAILNET_IP:-0.0.0.0}:21115:21115/tcp"
+      - "${TAILNET_IP:-0.0.0.0}:21116:21116/tcp"
+      - "${TAILNET_IP:-0.0.0.0}:21116:21116/udp"
+    labels:
+      plugroot.service: "rustdesk-relay"
+      plugroot.role: "relay"
+
+  rustdesk-hbbr:
+    image: rustdesk/rustdesk-server:latest
+    container_name: rustdesk-hbbr
+    restart: unless-stopped
+    command: ["hbbr"]
+    volumes:
+      - /opt/plugroot-state/rustdesk/data:/data
+    ports:
+      - "${TAILNET_IP:-0.0.0.0}:21117:21117/tcp"
+    labels:
+      plugroot.service: "rustdesk-relay"
+      plugroot.role: "relay"
