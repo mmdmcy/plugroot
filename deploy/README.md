@@ -4,6 +4,17 @@ Standardized, reproducible deployment of the selfhost stack that plugroot
 manages: Forgejo (git), Jellyfin (media), Navidrome (music), RustDesk relay
 (remote support), plus auxiliary units (ytdlp-web, autodale-monitor).
 
+> Status (2026-10-14): this directory is a reference template, not the live
+> layout on the current plugroot host. The live host runs one Compose project
+> per service from the state-root overlay
+> (`$PLUGROOT_STATE_ROOT/.plugroot/local/compose/<service>/compose.yaml`),
+> declared in `$PLUGROOT_STATE_ROOT/plugroot.local.toml` and started by
+> `plugroot-compose-stacks.service`. The live overlay binds RustDesk to both
+> the LAN and tailnet addresses and guards Jellyfin/Navidrome with the
+> `PLUGROOT-MEDIA` DOCKER-USER chain. The Tailscale serve list below is also
+> out of date: there is no `:45081` mapping; RustOp Viewer binds the tailnet
+> address directly on `45080`.
+
 ## Layout
 
 - `compose.yaml` — the 5-container docker stack. No secrets inline: every

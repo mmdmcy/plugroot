@@ -81,7 +81,7 @@ plugroot restore [check|finish] [directory-or-archive]
 plugroot emergency export --output <directory> --yes
 plugroot up|down|restart|logs <service|all>
 plugroot tui [--once]
-plugroot web [--bind <addr:port>]
+plugroot web [--bind <addr:port>]...
 plugroot boundary [--strict]
 plugroot audit-public [--install-hook]
 ```
@@ -101,6 +101,10 @@ plugroot audit-public [--install-hook]
 - Minimal unauthenticated component health at
   `/.well-known/linuxmice/component`; it exposes no service inventory, state
   paths, repository details, or credentials.
+- `plugroot web` accepts repeated `--bind` flags, and `PLUGROOT_WEB_BIND` may
+  list comma-separated addresses. Keep `127.0.0.1:8786` in that list on a host
+  whose dashboard binds a private carrier address, so the loopback endpoint
+  declared in `linuxmice-component.toml` stays reachable for LinuxMice.
 
 `linuxmice-component.toml` is the canonical optional catalog declaration for
 that status surface. Plugroot does not require LinuxMice to run and LinuxMice

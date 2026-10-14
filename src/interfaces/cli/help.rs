@@ -14,7 +14,7 @@ Usage:
   plugroot [--root <path>] emergency export --output <directory> --yes
   plugroot [--root <path>] up|down|restart|logs <service|all>
   plugroot [--root <path>] tui [--once]
-  plugroot [--root <path>] web [--bind <addr:port>]
+  plugroot [--root <path>] web [--bind <addr:port>]...
   plugroot [--root <path>] boundary [--strict]
   plugroot [--root <path>] audit-public [--install-hook]
 

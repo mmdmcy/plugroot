@@ -21,12 +21,39 @@ mod types;
 pub(crate) use types::WebRequest;
 
 pub(crate) fn cmd_web(ctx: Context, args: &[String]) -> io::Result<u8> {
-    let mut bind = ctx
+    let env_bind = ctx
         .env_values
         .get("PLUGROOT_WEB_BIND")
         .cloned()
-        .or_else(|| env::var("PLUGROOT_WEB_BIND").ok())
-        .unwrap_or_else(|| "127.0.0.1:8786".into());
+        .or_else(|| env::var("PLUGROOT_WEB_BIND").ok());
+    let binds = web_binds(env_bind.as_deref(), args)?;
+
+    let mut listeners = Vec::new();
+    for bind in &binds {
+        listeners.push(TcpListener::bind(bind)?);
+        println!("Plugroot web listening on http://{bind}");
+    }
+
+    let mut handles = Vec::new();
+    for listener in listeners {
+        let ctx = ctx.clone();
+        handles.push(std::thread::spawn(move || {
+            serve_web_listener(ctx, listener)
+        }));
+    }
+    for handle in handles {
+        let _ = handle.join();
+    }
+    Ok(0)
+}
+
+/// Resolve the web listen addresses.
+///
+/// Repeated `--bind` flags win over `PLUGROOT_WEB_BIND`; the environment value
+/// may list several comma-separated addresses, for example a private carrier
+/// address plus `127.0.0.1:8786` for the loopback LinuxMice component probe.
+pub(crate) fn web_binds(env_bind: Option<&str>, args: &[String]) -> io::Result<Vec<String>> {
+    let mut flag_binds = Vec::new();
     let mut index = 0;
     while index < args.len() {
         match args[index].as_str() {
@@ -37,19 +64,41 @@ pub(crate) fn cmd_web(ctx: Context, args: &[String]) -> io::Result<u8> {
                         "--bind requires addr:port",
                     ));
                 };
-                bind = value.clone();
+                flag_binds.push(value.clone());
                 index += 2;
             }
             value if value.starts_with("--bind=") => {
-                bind = value.trim_start_matches("--bind=").to_string();
+                flag_binds.push(value.trim_start_matches("--bind=").to_string());
                 index += 1;
             }
             _ => index += 1,
         }
     }
 
-    let listener = TcpListener::bind(&bind)?;
-    println!("Plugroot web listening on http://{bind}");
+    let raw = if flag_binds.is_empty() {
+        vec![env_bind.unwrap_or("127.0.0.1:8786").to_string()]
+    } else {
+        flag_binds
+    };
+    let mut binds: Vec<String> = Vec::new();
+    for entry in raw {
+        for part in entry.split(',') {
+            let part = part.trim();
+            if !part.is_empty() && !binds.iter().any(|bind| bind == part) {
+                binds.push(part.to_string());
+            }
+        }
+    }
+    if binds.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "no web bind address configured",
+        ));
+    }
+    Ok(binds)
+}
+
+fn serve_web_listener(ctx: Context, listener: TcpListener) {
     for stream in listener.incoming() {
         match stream {
             Ok(stream) => {
@@ -61,7 +110,6 @@ pub(crate) fn cmd_web(ctx: Context, args: &[String]) -> io::Result<u8> {
             Err(err) => eprintln!("connection error: {err}"),
         }
     }
-    Ok(0)
 }
 
 pub(crate) fn handle_http(ctx: Context, mut stream: TcpStream) -> io::Result<()> {

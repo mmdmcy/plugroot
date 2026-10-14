@@ -2,7 +2,9 @@ use crate::app::{Context, Manifest};
 use crate::features::status::StatusRow;
 use crate::interfaces::{
     tui::{fit_window, tui_content_width, visible_rows, TuiApp},
-    web::{component_status_json, render_web_service, render_web_service_lists, WebRequest},
+    web::{
+        component_status_json, render_web_service, render_web_service_lists, web_binds, WebRequest,
+    },
 };
 use std::collections::HashMap;
 use std::fs;
@@ -154,4 +156,28 @@ fn component_status_is_minimal_versioned_and_safe_without_auth() {
     assert_eq!(status["operation"], "status");
     assert_eq!(status["correlation_id"], "pilot:request-42");
     assert!(status["data"].get("services").is_none());
+}
+
+#[test]
+fn web_binds_default_env_list_and_repeated_flags() {
+    let none: Vec<String> = Vec::new();
+    assert_eq!(web_binds(None, &none).unwrap(), vec!["127.0.0.1:8786"]);
+    assert_eq!(
+        web_binds(
+            Some("192.0.2.10:8088, 127.0.0.1:8786,192.0.2.10:8088"),
+            &none
+        )
+        .unwrap(),
+        vec!["192.0.2.10:8088", "127.0.0.1:8786"]
+    );
+    let flags: Vec<String> = ["--bind", "10.0.0.1:1", "--bind=127.0.0.1:8786"]
+        .iter()
+        .map(|value| value.to_string())
+        .collect();
+    assert_eq!(
+        web_binds(Some("ignored:1"), &flags).unwrap(),
+        vec!["10.0.0.1:1", "127.0.0.1:8786"]
+    );
+    assert!(web_binds(None, &["--bind".to_string()]).is_err());
+    assert!(web_binds(Some(" , "), &none).is_err());
 }
