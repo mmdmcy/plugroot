@@ -12,6 +12,8 @@ use std::env;
 use std::io;
 use std::io::Read;
 use std::io::Write;
+use std::net::IpAddr;
+use std::sync::OnceLock;
 
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use sha2::{Digest, Sha256};
@@ -27,6 +29,7 @@ pub(crate) fn cmd_web(ctx: Context, args: &[String]) -> io::Result<u8> {
         .cloned()
         .or_else(|| env::var("PLUGROOT_WEB_BIND").ok());
     let binds = web_binds(env_bind.as_deref(), args)?;
+    require_password_off_loopback(&binds, web_password(&ctx))?;
 
     let mut listeners = Vec::new();
     for bind in &binds {
@@ -98,6 +101,46 @@ pub(crate) fn web_binds(env_bind: Option<&str>, args: &[String]) -> io::Result<V
     Ok(binds)
 }
 
+/// Refuse to serve unauthenticated on anything but loopback.
+///
+/// Without `PLUGROOT_WEB_PASSWORD`, every bind must be a loopback address;
+/// otherwise the action endpoints would run unauthenticated on that interface.
+pub(crate) fn require_password_off_loopback(
+    binds: &[String],
+    password: Option<&str>,
+) -> io::Result<()> {
+    if password.is_some() {
+        return Ok(());
+    }
+    let remote: Vec<&str> = binds
+        .iter()
+        .map(String::as_str)
+        .filter(|bind| !bind_is_loopback(bind))
+        .collect();
+    if remote.is_empty() {
+        return Ok(());
+    }
+    Err(io::Error::new(
+        io::ErrorKind::InvalidInput,
+        format!(
+            "refusing to serve the web dashboard without a password on {}: set PLUGROOT_WEB_PASSWORD (and optionally PLUGROOT_WEB_USER), or bind only loopback addresses via PLUGROOT_WEB_BIND / --bind",
+            remote.join(", ")
+        ),
+    ))
+}
+
+/// `host:port` with a loopback host. Hostnames other than `localhost` are not
+/// resolved and count as remote.
+pub(crate) fn bind_is_loopback(bind: &str) -> bool {
+    let host = match bind.rsplit_once(':') {
+        Some((host, _)) => host,
+        None => bind,
+    };
+    let host = host.trim_start_matches('[').trim_end_matches(']');
+    host.eq_ignore_ascii_case("localhost")
+        || host.parse::<IpAddr>().is_ok_and(|ip| ip.is_loopback())
+}
+
 fn serve_web_listener(ctx: Context, listener: TcpListener) {
     for stream in listener.incoming() {
         match stream {
@@ -116,7 +159,9 @@ pub(crate) fn handle_http(ctx: Context, mut stream: TcpStream) -> io::Result<()>
     let mut buf = [0u8; 8192];
     let n = stream.read(&mut buf)?;
     let mut data = buf[..n].to_vec();
-    read_http_body(&mut stream, &mut data)?;
+    if !read_http_body(&mut stream, &mut data)? {
+        return http_response(&mut stream, 413, "text/plain", b"request body too large");
+    }
     let request = String::from_utf8_lossy(&data);
     let Some(web_request) = parse_web_request(&request) else {
         return Ok(());
@@ -238,21 +283,21 @@ fn component_correlation_id(request: &WebRequest) -> String {
     format!("plugroot-{}-{nanos}", std::process::id())
 }
 
-pub(crate) fn read_http_body(stream: &mut TcpStream, data: &mut Vec<u8>) -> io::Result<()> {
+/// Largest request body read from a client, checked before authentication.
+pub(crate) const MAX_HTTP_BODY: usize = 64 * 1024;
+
+/// Read the rest of the body announced by `Content-Length`.
+///
+/// Returns `Ok(false)` without reading anything more when the declared length
+/// exceeds [`MAX_HTTP_BODY`].
+pub(crate) fn read_http_body(stream: &mut TcpStream, data: &mut Vec<u8>) -> io::Result<bool> {
     let Some(header_end) = find_header_end(data) else {
-        return Ok(());
+        return Ok(true);
     };
-    let headers = String::from_utf8_lossy(&data[..header_end]);
-    let content_length = headers
-        .lines()
-        .find_map(|line| {
-            line.split_once(':').and_then(|(name, value)| {
-                name.eq_ignore_ascii_case("content-length")
-                    .then(|| value.trim().parse::<usize>().ok())
-                    .flatten()
-            })
-        })
-        .unwrap_or(0);
+    let content_length = declared_content_length(&data[..header_end]);
+    if content_length > MAX_HTTP_BODY {
+        return Ok(false);
+    }
     let needed = header_end + 4 + content_length;
     while data.len() < needed {
         let mut buf = [0u8; 4096];
@@ -262,7 +307,20 @@ pub(crate) fn read_http_body(stream: &mut TcpStream, data: &mut Vec<u8>) -> io::
         }
         data.extend_from_slice(&buf[..n]);
     }
-    Ok(())
+    Ok(true)
+}
+
+pub(crate) fn declared_content_length(head: &[u8]) -> usize {
+    String::from_utf8_lossy(head)
+        .lines()
+        .find_map(|line| {
+            line.split_once(':').and_then(|(name, value)| {
+                name.eq_ignore_ascii_case("content-length")
+                    .then(|| value.trim().parse::<usize>().ok())
+                    .flatten()
+            })
+        })
+        .unwrap_or(0)
 }
 
 pub(crate) fn find_header_end(data: &[u8]) -> Option<usize> {
@@ -292,30 +350,47 @@ pub(crate) fn parse_web_request(request: &str) -> Option<WebRequest> {
     })
 }
 
-pub(crate) fn web_authorized(ctx: &Context, request: &WebRequest) -> bool {
-    let password = ctx
-        .env_values
-        .get("PLUGROOT_WEB_PASSWORD")
-        .filter(|value| !value.is_empty());
-    let Some(password) = password else {
-        return true;
-    };
-    let user = ctx
-        .env_values
+pub(crate) fn web_user(ctx: &Context) -> &str {
+    ctx.env_values
         .get("PLUGROOT_WEB_USER")
         .filter(|value| !value.is_empty())
         .map(String::as_str)
-        .unwrap_or("plugroot");
+        .unwrap_or("plugroot")
+}
+
+/// The configured dashboard password, or `None` when unset or empty.
+pub(crate) fn web_password(ctx: &Context) -> Option<&str> {
+    ctx.env_values
+        .get("PLUGROOT_WEB_PASSWORD")
+        .filter(|value| !value.is_empty())
+        .map(String::as_str)
+}
+
+/// Equality in time independent of where the inputs differ (length may leak).
+pub(crate) fn ct_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (x, y) in a.iter().zip(b) {
+        diff |= x ^ y;
+    }
+    diff == 0
+}
+
+pub(crate) fn web_authorized(ctx: &Context, request: &WebRequest) -> bool {
+    let Some(password) = web_password(ctx) else {
+        return true;
+    };
+    let user = web_user(ctx);
     let expected = format!("Basic {}", BASE64.encode(format!("{user}:{password}")));
-    request
+    request.headers.iter().any(|(name, value)| {
+        name == "authorization" && ct_eq(value.as_bytes(), expected.as_bytes())
+    }) || request
         .headers
         .iter()
-        .any(|(name, value)| name == "authorization" && value == &expected)
-        || request
-            .headers
-            .iter()
-            .find(|(name, _)| name == "cookie")
-            .is_some_and(|(_, value)| web_session_valid(ctx, value))
+        .find(|(name, _)| name == "cookie")
+        .is_some_and(|(_, value)| web_session_valid(ctx, value))
 }
 
 pub(crate) fn handle_web_login(
@@ -324,21 +399,13 @@ pub(crate) fn handle_web_login(
     request: &WebRequest,
 ) -> io::Result<()> {
     let fields = parse_form_body(&request.body);
-    let expected_user = ctx
-        .env_values
-        .get("PLUGROOT_WEB_USER")
-        .filter(|value| !value.is_empty())
-        .map(String::as_str)
-        .unwrap_or("plugroot");
-    let expected_password = ctx
-        .env_values
-        .get("PLUGROOT_WEB_PASSWORD")
-        .filter(|value| !value.is_empty())
-        .map(String::as_str)
-        .unwrap_or("");
+    let expected_user = web_user(ctx);
+    let expected_password = web_password(ctx).unwrap_or("");
     let user = fields.get("user").map(String::as_str).unwrap_or("");
     let password = fields.get("password").map(String::as_str).unwrap_or("");
-    if expected_password.is_empty() || (user == expected_user && password == expected_password) {
+    let user_ok = ct_eq(user.as_bytes(), expected_user.as_bytes());
+    let password_ok = ct_eq(password.as_bytes(), expected_password.as_bytes());
+    if expected_password.is_empty() || (user_ok & password_ok) {
         let cookie = web_session_cookie(ctx);
         return http_redirect_with_cookie(stream, "/", &cookie);
     }
@@ -403,30 +470,116 @@ pub(crate) fn web_session_valid(ctx: &Context, cookie_header: &str) -> bool {
     let Ok(expires) = expires.parse::<u64>() else {
         return false;
     };
-    expires >= now_unix_seconds() && signature == web_session_signature(ctx, expires)
+    expires >= now_unix_seconds()
+        && ct_eq(
+            signature.as_bytes(),
+            web_session_signature(ctx, expires).as_bytes(),
+        )
 }
 
+/// HMAC-SHA256 over the user and expiry under the session secret; the
+/// password never enters the cookie.
 pub(crate) fn web_session_signature(ctx: &Context, expires: u64) -> String {
-    let user = ctx
-        .env_values
-        .get("PLUGROOT_WEB_USER")
-        .filter(|value| !value.is_empty())
-        .map(String::as_str)
-        .unwrap_or("plugroot");
-    let password = ctx
-        .env_values
-        .get("PLUGROOT_WEB_PASSWORD")
-        .filter(|value| !value.is_empty())
-        .map(String::as_str)
-        .unwrap_or("");
-    let mut hasher = Sha256::new();
-    hasher.update(b"plugroot-web-session-v1");
-    hasher.update(user.as_bytes());
-    hasher.update(b":");
-    hasher.update(expires.to_string().as_bytes());
-    hasher.update(b":");
-    hasher.update(password.as_bytes());
-    to_hex(&hasher.finalize())
+    let message = format!("plugroot-web-session-v2:{}:{expires}", web_user(ctx));
+    to_hex(&hmac_sha256(&web_session_secret(ctx), message.as_bytes()))
+}
+
+const SESSION_SECRET_FILE: &str = "web-session.key";
+
+/// The cookie signing key: a random 32-byte secret kept as hex in a 0600 file
+/// under the state root so sessions survive restarts. When that file cannot be
+/// read or written, a random per-process secret is used instead.
+pub(crate) fn web_session_secret(ctx: &Context) -> [u8; 32] {
+    let path = ctx.state_root().join(SESSION_SECRET_FILE);
+    if let Some(secret) = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|text| from_hex_32(text.trim()))
+    {
+        return secret;
+    }
+    let secret = random_32();
+    let written = {
+        use std::os::unix::fs::OpenOptionsExt;
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&path)
+            .and_then(|mut file| file.write_all(format!("{}\n", to_hex(&secret)).as_bytes()))
+    };
+    match written {
+        Ok(()) => secret,
+        Err(_) if path.exists() => {
+            // Another thread or process wrote it first.
+            std::fs::read_to_string(&path)
+                .ok()
+                .and_then(|text| from_hex_32(text.trim()))
+                .unwrap_or_else(process_session_secret)
+        }
+        Err(err) => {
+            eprintln!(
+                "warning: cannot store session secret at {}: {err}; sessions end when this process does",
+                path.display()
+            );
+            process_session_secret()
+        }
+    }
+}
+
+fn process_session_secret() -> [u8; 32] {
+    static SECRET: OnceLock<[u8; 32]> = OnceLock::new();
+    *SECRET.get_or_init(random_32)
+}
+
+fn random_32() -> [u8; 32] {
+    let mut out = [0u8; 32];
+    match std::fs::File::open("/dev/urandom").and_then(|mut file| file.read_exact(&mut out)) {
+        Ok(()) => out,
+        Err(err) => {
+            eprintln!(
+                "warning: /dev/urandom unavailable ({err}); deriving a weaker session secret"
+            );
+            let nanos = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|duration| duration.as_nanos())
+                .unwrap_or_default();
+            let mut hasher = Sha256::new();
+            hasher.update(nanos.to_le_bytes());
+            hasher.update(std::process::id().to_le_bytes());
+            hasher.update((&out as *const [u8; 32] as usize).to_le_bytes());
+            hasher.finalize().into()
+        }
+    }
+}
+
+fn from_hex_32(text: &str) -> Option<[u8; 32]> {
+    if text.len() != 64 || !text.is_ascii() {
+        return None;
+    }
+    let mut out = [0u8; 32];
+    for (index, byte) in out.iter_mut().enumerate() {
+        *byte = u8::from_str_radix(&text[index * 2..index * 2 + 2], 16).ok()?;
+    }
+    Some(out)
+}
+
+pub(crate) fn hmac_sha256(key: &[u8], message: &[u8]) -> [u8; 32] {
+    const BLOCK: usize = 64;
+    let mut block = [0u8; BLOCK];
+    if key.len() > BLOCK {
+        block[..32].copy_from_slice(&Sha256::digest(key));
+    } else {
+        block[..key.len()].copy_from_slice(key);
+    }
+    let ipad: Vec<u8> = block.iter().map(|byte| byte ^ 0x36).collect();
+    let opad: Vec<u8> = block.iter().map(|byte| byte ^ 0x5c).collect();
+    let mut inner = Sha256::new();
+    inner.update(&ipad);
+    inner.update(message);
+    let mut outer = Sha256::new();
+    outer.update(&opad);
+    outer.update(inner.finalize());
+    outer.finalize().into()
 }
 
 pub(crate) fn to_hex(bytes: &[u8]) -> String {
@@ -487,6 +640,7 @@ pub(crate) fn http_response(
         401 => "Unauthorized",
         403 => "Forbidden",
         404 => "Not Found",
+        413 => "Content Too Large",
         500 => "Internal Server Error",
         _ => "OK",
     };

@@ -5,7 +5,12 @@ Plugroot is private-first.
 ## Defaults
 
 - The web dashboard binds to `127.0.0.1:8786` unless configured otherwise.
-- Set `PLUGROOT_WEB_PASSWORD` to require HTTP Basic auth for the web dashboard.
+- Set `PLUGROOT_WEB_PASSWORD` to require HTTP Basic auth or a login for the web
+  dashboard. `plugroot web` refuses to start without it when any bind address
+  is not loopback. Login cookies are HMAC-signed with a random secret stored
+  in `web-session.key` (mode 0600) under the state root, never with the
+  password; the password itself is still read from the environment as plain
+  text. Request bodies above 64 KiB are rejected before authentication.
 - Example services bind to `PLUGROOT_PRIVATE_IP`, which should be localhost or
   a private-network address.
 - Actions are allowlisted per service.

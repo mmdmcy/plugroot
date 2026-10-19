@@ -96,8 +96,8 @@ plugroot audit-public [--install-hook]
 - Manual encrypted emergency exports in `docs/emergency.md`.
 - Fresh-install and standby-server recovery in `docs/restore.md`.
 - Plugroot Web as a local private dashboard.
-- Optional Plugroot Web Basic auth through `PLUGROOT_WEB_USER` and
-  `PLUGROOT_WEB_PASSWORD`.
+- Plugroot Web Basic auth / login through `PLUGROOT_WEB_USER` and
+  `PLUGROOT_WEB_PASSWORD`; optional only while every bind address is loopback.
 - Minimal unauthenticated component health at
   `/.well-known/linuxmice/component`; it exposes no service inventory, state
   paths, repository details, or credentials.

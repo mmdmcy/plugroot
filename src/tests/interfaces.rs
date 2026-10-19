@@ -1,13 +1,18 @@
-use crate::app::{Context, Manifest};
+use crate::app::{Context, Manifest, PlugrootConfig};
 use crate::features::status::StatusRow;
 use crate::interfaces::{
     tui::{fit_window, tui_content_width, visible_rows, TuiApp},
     web::{
-        component_status_json, render_web_service, render_web_service_lists, web_binds, WebRequest,
+        bind_is_loopback, component_status_json, ct_eq, declared_content_length, hmac_sha256,
+        read_http_body, render_web_service, render_web_service_lists,
+        require_password_off_loopback, web_authorized, web_binds, web_session_cookie,
+        web_session_secret, web_session_valid, WebRequest, MAX_HTTP_BODY,
     },
 };
 use std::collections::HashMap;
 use std::fs;
+use std::io::{Read, Write};
+use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::time::Instant;
 
@@ -180,4 +185,189 @@ fn web_binds_default_env_list_and_repeated_flags() {
     );
     assert!(web_binds(None, &["--bind".to_string()]).is_err());
     assert!(web_binds(Some(" , "), &none).is_err());
+}
+
+fn web_test_ctx(state_root: &std::path::Path, env: &[(&str, &str)]) -> Context {
+    Context {
+        root: state_root.to_path_buf(),
+        manifest: Manifest {
+            plugroot: Some(PlugrootConfig {
+                state_root: Some(state_root.to_string_lossy().into_owned()),
+                ..PlugrootConfig::default()
+            }),
+            ..Manifest::default()
+        },
+        env_values: env
+            .iter()
+            .map(|(key, value)| (key.to_string(), value.to_string()))
+            .collect(),
+    }
+}
+
+fn request_with_header(name: &str, value: &str) -> WebRequest {
+    WebRequest {
+        method: "POST".to_string(),
+        path: "/api/action/alpha/restart".to_string(),
+        headers: vec![(name.to_string(), value.to_string())],
+        body: String::new(),
+    }
+}
+
+#[test]
+fn web_requires_password_off_loopback() {
+    assert!(bind_is_loopback("127.0.0.1:8786"));
+    assert!(bind_is_loopback("localhost:8786"));
+    assert!(bind_is_loopback("[::1]:8786"));
+    assert!(!bind_is_loopback("100.64.0.1:8786"));
+    assert!(!bind_is_loopback("0.0.0.0:8786"));
+    assert!(!bind_is_loopback("[::]:8786"));
+    assert!(!bind_is_loopback("plugroot.internal:8786"));
+
+    let loopback = vec!["127.0.0.1:8786".to_string()];
+    let mixed = vec!["100.64.0.1:8786".to_string(), "127.0.0.1:8786".to_string()];
+    assert!(require_password_off_loopback(&loopback, None).is_ok());
+    assert!(require_password_off_loopback(&mixed, Some("pw")).is_ok());
+    let err = require_password_off_loopback(&mixed, None).unwrap_err();
+    assert!(err.to_string().contains("PLUGROOT_WEB_PASSWORD"));
+    assert!(err.to_string().contains("100.64.0.1:8786"));
+}
+
+#[test]
+fn web_ct_eq_and_hmac_vectors() {
+    assert!(ct_eq(b"", b""));
+    assert!(ct_eq(b"abc", b"abc"));
+    assert!(!ct_eq(b"abc", b"abd"));
+    assert!(!ct_eq(b"abc", b"abcd"));
+    assert!(!ct_eq(b"abc", b""));
+
+    // RFC 4231 test case 2.
+    let mac = hmac_sha256(b"Jefe", b"what do ya want for nothing?");
+    assert_eq!(
+        crate::interfaces::web::to_hex(&mac),
+        "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843"
+    );
+    // RFC 4231 test case 6: a key longer than the block size.
+    let mac = hmac_sha256(
+        &[0xaa; 131],
+        b"Test Using Larger Than Block-Size Key - Hash Key First",
+    );
+    assert_eq!(
+        crate::interfaces::web::to_hex(&mac),
+        "60e431591ee0b67f0d8a26aacbf5b77f8e0bc6213728c5140546040f0ee37f54"
+    );
+}
+
+#[test]
+fn web_session_cookie_round_trip_uses_persisted_secret() {
+    let dir = tempfile::tempdir().unwrap();
+    let env = [
+        ("PLUGROOT_WEB_PASSWORD", "hunter2"),
+        ("PLUGROOT_WEB_USER", "rei"),
+    ];
+    let ctx = web_test_ctx(dir.path(), &env);
+
+    let cookie = web_session_cookie(&ctx);
+    let value = cookie.split(';').next().unwrap();
+    assert!(value.starts_with("plugroot_session="));
+    assert!(web_session_valid(&ctx, value));
+    assert!(web_authorized(&ctx, &request_with_header("cookie", value)));
+
+    // The secret is random, persisted with owner-only permissions, and stable.
+    let key_path = dir.path().join("web-session.key");
+    let secret = web_session_secret(&ctx);
+    assert_eq!(secret, web_session_secret(&ctx));
+    assert_ne!(secret, [0u8; 32]);
+    assert_eq!(fs::read_to_string(&key_path).unwrap().trim().len(), 64);
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(
+            fs::metadata(&key_path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+    }
+    // The cookie no longer depends on the password.
+    assert!(!fs::read_to_string(&key_path).unwrap().contains("hunter2"));
+    let rotated = web_test_ctx(
+        dir.path(),
+        &[
+            ("PLUGROOT_WEB_PASSWORD", "other"),
+            ("PLUGROOT_WEB_USER", "rei"),
+        ],
+    );
+    assert!(web_session_valid(&rotated, value));
+
+    // Tampering, expiry and a different secret are rejected.
+    let (expires, signature) = value
+        .trim_start_matches("plugroot_session=")
+        .split_once('.')
+        .unwrap();
+    let mut flipped = signature.to_string();
+    flipped.replace_range(0..1, if signature.starts_with('0') { "1" } else { "0" });
+    assert!(!web_session_valid(
+        &ctx,
+        &format!("plugroot_session={expires}.{flipped}")
+    ));
+    assert!(!web_session_valid(
+        &ctx,
+        &format!("plugroot_session=1.{signature}")
+    ));
+    assert!(!web_session_valid(&ctx, "plugroot_session=garbage"));
+    let other = tempfile::tempdir().unwrap();
+    assert!(!web_session_valid(&web_test_ctx(other.path(), &env), value));
+}
+
+#[test]
+fn web_basic_auth_compares_exact_header() {
+    let dir = tempfile::tempdir().unwrap();
+    let ctx = web_test_ctx(dir.path(), &[("PLUGROOT_WEB_PASSWORD", "hunter2")]);
+    let good = "Basic cGx1Z3Jvb3Q6aHVudGVyMg=="; // plugroot:hunter2
+    assert!(web_authorized(
+        &ctx,
+        &request_with_header("authorization", good)
+    ));
+    let bad = "Basic cGx1Z3Jvb3Q6aHVudGVyMw=="; // plugroot:hunter3
+    assert!(!web_authorized(
+        &ctx,
+        &request_with_header("authorization", bad)
+    ));
+    assert!(!web_authorized(
+        &ctx,
+        &request_with_header("authorization", "")
+    ));
+}
+
+#[test]
+fn web_body_cap_rejects_large_content_length_before_reading() {
+    assert_eq!(
+        declared_content_length(b"POST / HTTP/1.1\r\nContent-Length: 12"),
+        12
+    );
+    assert_eq!(
+        declared_content_length(b"POST / HTTP/1.1\r\ncontent-length: x"),
+        0
+    );
+    assert_eq!(MAX_HTTP_BODY, 65536);
+
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let mut client = TcpStream::connect(addr).unwrap();
+    let (mut server, _) = listener.accept().unwrap();
+
+    let head = format!(
+        "POST /login HTTP/1.1\r\nContent-Length: {}\r\n\r\n",
+        MAX_HTTP_BODY + 1
+    );
+    client.write_all(head.as_bytes()).unwrap();
+    let mut data = vec![0u8; head.len()];
+    server.read_exact(&mut data).unwrap();
+    assert!(!read_http_body(&mut server, &mut data).unwrap());
+    assert_eq!(data.len(), head.len());
+
+    let head = "POST /login HTTP/1.1\r\nContent-Length: 5\r\n\r\n";
+    client.write_all(head.as_bytes()).unwrap();
+    client.write_all(b"a=b&c").unwrap();
+    let mut data = vec![0u8; head.len()];
+    server.read_exact(&mut data).unwrap();
+    assert!(read_http_body(&mut server, &mut data).unwrap());
+    assert!(data.ends_with(b"a=b&c"));
 }
