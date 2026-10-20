@@ -20,7 +20,7 @@ use app::{
 };
 use features::{
     absolute_clean_path, broad_ufw_allow_rules, cmd_action, cmd_apply, cmd_backup, cmd_doctor,
-    cmd_emergency, cmd_list, cmd_release_check, cmd_repos, cmd_restore, cmd_status,
+    cmd_emergency, cmd_list, cmd_release, cmd_release_check, cmd_repos, cmd_restore, cmd_status,
     emergency_metadata_commands, emergency_timestamp, expected_container_names,
     expected_manifest_tcp_ports, has_control, limit_lines, logs_for, meminfo_kb,
     print_status_table, program_available, run_fixed_action, run_read_command, status_rows,
@@ -65,6 +65,7 @@ pub fn run() -> io::Result<u8> {
         "repos" => cmd_repos(&ctx, &args[1..]),
         "doctor" => cmd_doctor(&ctx, &args[1..]),
         "release-check" => cmd_release_check(&ctx),
+        "release" => cmd_release(&ctx, &args[1..]),
         "backup" => cmd_backup(&ctx, &args[1..]),
         "emergency" => cmd_emergency(&ctx, &args[1..]),
         "up" => cmd_action(&ctx, "start", &args[1..]),

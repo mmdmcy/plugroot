@@ -9,6 +9,7 @@ Usage:
   plugroot [--root <path>] repos sync
   plugroot [--root <path>] doctor [--json] [--strict]
   plugroot [--root <path>] release-check
+  plugroot [--root <path>] release <service> [<binary>|rollback] [--restart]
   plugroot [--root <path>] backup [check] [directory]
   plugroot restore [check|finish] [directory-or-archive]
   plugroot [--root <path>] emergency export --output <directory> --yes

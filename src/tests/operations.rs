@@ -374,3 +374,79 @@ fn generates_user_unit() {
     assert!(unit.contains("ExecStart=/usr/bin/python3 server.py"));
     assert!(unit.contains("WantedBy=default.target"));
 }
+
+#[test]
+fn release_install_flips_current_and_rollback_returns() {
+    use crate::features::release::{
+        install_release, list_releases, rollback_release, ReleaseChange,
+    };
+    use std::os::unix::fs::PermissionsExt;
+
+    let state = tempfile::tempdir().unwrap();
+    let dir = state.path().join("releases").join("demo");
+    let binary = state.path().join("demo-build");
+    fs::write(&binary, "#!/bin/sh\necho demo\n").unwrap();
+
+    let first = install_release(&dir, "demo", &binary, "20260101000000").unwrap();
+    assert_eq!(
+        first,
+        ReleaseChange {
+            current: "20260101000000".into(),
+            previous: None
+        }
+    );
+    let installed = dir.join("current").join("demo");
+    assert_eq!(fs::read(&installed).unwrap(), fs::read(&binary).unwrap());
+    assert_eq!(
+        fs::metadata(&installed).unwrap().permissions().mode() & 0o777,
+        0o755
+    );
+
+    let second = install_release(&dir, "demo", &binary, "20260102000000").unwrap();
+    assert_eq!(second.previous.as_deref(), Some("20260101000000"));
+    assert_eq!(
+        fs::read_link(dir.join("current")).unwrap(),
+        PathBuf::from("20260102000000")
+    );
+    assert!(
+        dir.join("20260101000000").join("demo").exists(),
+        "old build kept"
+    );
+
+    let listing = list_releases(&dir).unwrap();
+    assert_eq!(listing.current.as_deref(), Some("20260102000000"));
+    assert_eq!(listing.releases, vec!["20260101000000", "20260102000000"]);
+
+    let back = rollback_release(&dir).unwrap();
+    assert_eq!(back.current, "20260101000000");
+    assert_eq!(back.previous.as_deref(), Some("20260102000000"));
+    assert!(
+        rollback_release(&dir).is_err(),
+        "nothing older than the first build"
+    );
+
+    assert!(install_release(&dir, "demo", &binary, "20260102000000").is_err());
+    assert_eq!(
+        crate::features::release::unique_stamp(&dir, "20260102000000"),
+        "20260102000000-2"
+    );
+    assert_eq!(
+        crate::features::release::unique_stamp(&dir, "20260109000000"),
+        "20260109000000"
+    );
+    assert!(install_release(&dir, "demo", &binary, "current").is_err());
+    assert!(install_release(&dir, "demo", &dir, "20260103000000").is_err());
+    assert!(dir.join("current").join("demo").exists());
+}
+
+#[test]
+fn release_stamp_is_utc_civil_time() {
+    use crate::features::release::{release_stamp, stamp_from_unix};
+
+    assert_eq!(stamp_from_unix(0), "19700101000000");
+    assert_eq!(stamp_from_unix(1_700_000_000), "20231114221320");
+    assert_eq!(stamp_from_unix(951_782_400), "20000229000000");
+    let now = release_stamp();
+    assert_eq!(now.len(), 14);
+    assert!(now.chars().all(|c| c.is_ascii_digit()));
+}

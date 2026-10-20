@@ -76,6 +76,7 @@ plugroot apply [--dry-run] [--sync-repos]
 plugroot repos sync
 plugroot doctor [--json] [--strict]
 plugroot release-check
+plugroot release <service> [<binary>|rollback] [--restart]
 plugroot backup [check] [directory]
 plugroot restore [check|finish] [directory-or-archive]
 plugroot emergency export --output <directory> --yes
@@ -85,6 +86,23 @@ plugroot web [--bind <addr:port>]...
 plugroot boundary [--strict]
 plugroot audit-public [--install-hook]
 ```
+
+## Binary Releases
+
+A `systemd` service whose unit runs `<state root>/releases/<id>/current/<id>`
+gets new builds through `plugroot release`:
+
+```text
+plugroot release motehold                      # list builds, mark current
+plugroot release motehold target/release/motehold --restart
+plugroot release motehold rollback --restart
+```
+
+Each build is copied into `releases/<id>/<UTC stamp>/` and `current` is
+flipped with one rename, so the previous build stays on disk for rollback.
+Without `--restart` the running service keeps the old build until
+`plugroot restart <id>`. The releases directory must be writable by whoever
+runs the command (root-owned directories need `sudo`).
 
 ## Included Examples
 

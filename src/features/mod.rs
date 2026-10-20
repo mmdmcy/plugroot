@@ -3,6 +3,7 @@
 pub(crate) mod apply;
 pub(crate) mod backup;
 pub(crate) mod doctor;
+pub(crate) mod release;
 pub(crate) mod restore;
 pub(crate) mod services;
 pub(crate) mod status;
@@ -18,6 +19,7 @@ pub(crate) use doctor::{
     expected_manifest_tcp_ports, limit_lines, meminfo_kb, run_read_command,
     tailscale_text_has_public_funnel, unexpected_wildcard_tcp_listeners, DoctorFinding,
 };
+pub(crate) use release::cmd_release;
 pub(crate) use restore::cmd_restore;
 pub(crate) use services::{cmd_action, has_control, logs_for, run_fixed_action};
 pub(crate) use status::{cmd_list, cmd_status, print_status_table, status_rows, StatusRow};
