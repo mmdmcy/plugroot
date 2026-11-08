@@ -18,12 +18,12 @@ private network. Do not expose private control surfaces to the public internet.
 ## Quick Start
 
 ```bash
-cargo run -- status
-cargo run -- doctor
-cargo run -- boundary --strict
-cargo run -- apply --dry-run
-cargo run -- repos sync
-cargo run -- tui
+go run . status
+go run . doctor
+go run . boundary --strict
+go run . apply --dry-run
+go run . repos sync
+go run . tui
 ```
 
 On an installed host, Plugroot can install a `plugroot` launcher:
@@ -42,12 +42,17 @@ cp .env.example /opt/plugroot-state/.env
 cp plugroot.local.example.toml /opt/plugroot-state/plugroot.local.toml
 ```
 
-Build a release binary:
+Build a release binary (Go with the standard library only: no third-party
+modules, so the build fetches nothing):
 
 ```bash
-cargo build --release
-./target/release/plugroot status
+CGO_ENABLED=0 GOPROXY=off go build -trimpath -ldflags '-s -w' -o plugroot .
+./plugroot status
 ```
+
+The Rust version this replaced (2026-11-08) is kept in `archive/rust`, with
+its tests (`cargo test --manifest-path archive/rust/Cargo.toml`), so it can
+still be built and compared; it is not built or shipped.
 
 ## Manifest
 
@@ -167,9 +172,10 @@ backups/
 Before publishing changes:
 
 ```bash
-cargo fmt --check
-cargo test
-cargo katrust check
+gofmt -l .
+go vet ./...
+go test ./...
+go list -m all        # must print only github.com/mmdmcy/plugroot
 plugroot audit-public
 plugroot boundary --strict
 plugroot release-check
@@ -179,7 +185,7 @@ gitleaks detect --source . --redact
 For local protection without CI, install the pre-commit and pre-push hooks:
 
 ```bash
-cargo run -- audit-public --install-hook
+go run . audit-public --install-hook
 ```
 
 For host-specific names, domains, or literal terms that should never appear in

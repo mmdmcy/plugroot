@@ -29,7 +29,7 @@ Recommended path:
 sudo install -d -o "$USER" -g "$USER" -m 700 /opt/plugroot-state
 cp .env.example /opt/plugroot-state/.env
 cp plugroot.local.example.toml /opt/plugroot-state/plugroot.local.toml
-cargo run -- boundary --strict
+plugroot boundary --strict
 plugroot status
 plugroot apply --dry-run
 plugroot repos sync

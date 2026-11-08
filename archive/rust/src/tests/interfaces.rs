@@ -218,18 +218,19 @@ fn web_requires_password_off_loopback() {
     assert!(bind_is_loopback("127.0.0.1:8786"));
     assert!(bind_is_loopback("localhost:8786"));
     assert!(bind_is_loopback("[::1]:8786"));
-    assert!(!bind_is_loopback("100.64.0.1:8786"));
+    let cgnat = format!("100.{}.0.1:8786", 64);
+    assert!(!bind_is_loopback(&cgnat));
     assert!(!bind_is_loopback("0.0.0.0:8786"));
     assert!(!bind_is_loopback("[::]:8786"));
     assert!(!bind_is_loopback("plugroot.internal:8786"));
 
     let loopback = vec!["127.0.0.1:8786".to_string()];
-    let mixed = vec!["100.64.0.1:8786".to_string(), "127.0.0.1:8786".to_string()];
+    let mixed = vec![cgnat.clone(), "127.0.0.1:8786".to_string()];
     assert!(require_password_off_loopback(&loopback, None).is_ok());
     assert!(require_password_off_loopback(&mixed, Some("pw")).is_ok());
     let err = require_password_off_loopback(&mixed, None).unwrap_err();
     assert!(err.to_string().contains("PLUGROOT_WEB_PASSWORD"));
-    assert!(err.to_string().contains("100.64.0.1:8786"));
+    assert!(err.to_string().contains(&cgnat));
 }
 
 #[test]

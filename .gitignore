@@ -1,4 +1,6 @@
 /target/
+/archive/rust/target/
+/plugroot
 /.env
 /.env.*
 !/.env.example

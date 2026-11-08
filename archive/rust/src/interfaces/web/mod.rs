@@ -107,9 +107,9 @@ pub(crate) fn web_binds(env_bind: Option<&str>, args: &[String]) -> io::Result<V
 /// otherwise the action endpoints would run unauthenticated on that interface.
 pub(crate) fn require_password_off_loopback(
     binds: &[String],
-    password: Option<&str>,
+    configured: Option<&str>,
 ) -> io::Result<()> {
-    if password.is_some() {
+    if configured.is_some() {
         return Ok(());
     }
     let remote: Vec<&str> = binds

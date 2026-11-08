@@ -1,3 +1,8 @@
+# Archived 2026-11-08: the Go version at the repository root replaced this
+# Rust Plugroot with the same commands, output, files and HTTP behaviour.
+# Kept so the old version can be built, tested and compared:
+#   cargo test --manifest-path archive/rust/Cargo.toml
+#   cargo build --release --manifest-path archive/rust/Cargo.toml
 [package]
 name = "plugroot"
 version = "0.1.0"

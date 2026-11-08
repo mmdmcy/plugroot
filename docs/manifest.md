@@ -1,7 +1,10 @@
 # Manifest
 
-Plugroot uses TOML because it is readable, comment-friendly, and easy to parse
-from Rust.
+Plugroot uses TOML because it is readable and comment-friendly. Plugroot reads
+it with its own small reader (standard library only): tables, arrays of tables,
+"basic" and 'literal' strings, integers, booleans and arrays. Floats, dates,
+inline tables, dotted keys and multi-line strings are refused with their line
+number rather than half understood.
 
 ## Files
 
