@@ -21,7 +21,10 @@ manages: Forgejo (git), Jellyfin (media), Navidrome (music), RustDesk relay
   per-host value comes from `/opt/plugroot-state/.env` (interpolation).
 - `env.example` — per-host variable template (copy keys into the state-root
   `.env`, never overwrite it).
-- `units/` — systemd unit templates (`@USER@` placeholder).
+- `units/` — systemd unit templates (`@USER@` placeholder);
+  `plugroot-web.service` is the dashboard's sandboxed unit (root for the
+  Docker socket, systemctl and runuser, with four capabilities), installed
+  as-is.
 
 ## Install on a new host
 

@@ -1,0 +1,52 @@
+# Plugroot web dashboard, sandboxed. Install as-is:
+#   sudo install -m 0644 plugroot-web.service /etc/systemd/system/
+# PLUGROOT_WEB_BIND and PLUGROOT_WEB_PASSWORD come from the state root's .env.
+
+[Unit]
+Description=Plugroot web dashboard
+After=network-online.target docker.service tailscale-online.target
+Wants=network-online.target tailscale-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/plugroot
+EnvironmentFile=/opt/plugroot-state/.env
+ExecStart=/opt/plugroot/bin/plugroot --root /opt/plugroot web --bind ${PLUGROOT_WEB_BIND}
+Restart=on-failure
+RestartSec=3
+
+# Root stays: docker compose and inspect (the Docker socket), systemctl of
+# system units, runuser for user units. systemd-analyze security: 2.5.
+# Root is the default, so no User= line: with User=root, NoNewPrivileges
+# and these filters, systemd 255 leaves CAP_SETUID out of the permitted
+# set and runuser fails ("cannot set user id").
+# Capabilities: SETUID/SETGID for runuser, SYS_RESOURCE for runuser's
+# pam_limits (raises the hard limits to PID 1's), DAC_READ_SEARCH to read
+# the state root's .env when the operator owns it.
+CapabilityBoundingSet=CAP_DAC_READ_SEARCH CAP_SETGID CAP_SETUID CAP_SYS_RESOURCE
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/opt/plugroot-state
+ProtectHome=read-only
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+ProtectProc=invisible
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target
