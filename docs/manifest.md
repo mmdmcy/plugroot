@@ -155,6 +155,17 @@ controls = ["start", "stop", "restart", "logs"]
 
 If a control is absent, the CLI, TUI, and web dashboard refuse that action.
 
+A service's `url` is its link in the overview: the web dashboard opens it from
+the service's name and its Open button, and `plugroot status --json` and
+`plugroot list` report it. Give the address the people who use the dashboard
+reach the service at, by name where the private network has names (a loopback
+URL only works on the host itself); a service without a page of its own has no
+`url` and is listed under "No direct link". `access` says how it is reached,
+for people. The web dashboard reads the manifests and `.env` files again on
+every request, as the TUI does on refresh, so a service added to or changed in
+the overlay shows on the next page load without a restart; when the files no
+longer load, it keeps serving the last manifest that did and logs why once.
+
 Compose services use the state-root `.env` automatically when it exists. A
 service can override that with:
 

@@ -11,6 +11,9 @@ Plugroot is private-first.
   in `web-session.key` (mode 0600) under the state root, never with the
   password; the password itself is still read from the environment as plain
   text. Request bodies above 64 KiB are rejected before authentication.
+  The dashboard reads the manifests and `.env` again on every request; a
+  reload that would leave a non-loopback bind without a password is refused
+  and the manifest read before stays in use.
 - Example services bind to `PLUGROOT_PRIVATE_IP`, which should be localhost or
   a private-network address.
 - Actions are allowlisted per service.

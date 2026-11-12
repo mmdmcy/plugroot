@@ -282,6 +282,40 @@ func TestWebRequiresPasswordOffLoopback(t *testing.T) {
 	}
 }
 
+func TestWebServesOverlayChangesAndKeepsLastGoodManifest(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "plugroot.toml"), "\n[[service]]\nid = \"alpha\"\nname = \"Alpha\"\nkind = \"noop\"\n")
+	live := &webContext{root: dir, binds: []string{"127.0.0.1:8786"}, ctx: mustContext(t, dir)}
+	overlay := filepath.Join(dir, "plugroot.local.toml")
+	writeFile(t, overlay, "\n[[service]]\nid = \"beta\"\nname = \"Beta\"\nkind = \"noop\"\nurl = \"https://beta.example\"\n")
+	if s, ok := live.current().service("beta"); !ok || deref(s.URL, "") != "https://beta.example" {
+		t.Fatal("a service added to the overlay is not served")
+	}
+	writeFile(t, overlay, "\n[[service]]\nid = \"beta\"\n")
+	if _, ok := live.current().service("beta"); !ok || live.lastErr == "" {
+		t.Fatal("an overlay that no longer loads replaced the last good manifest")
+	}
+	writeFile(t, overlay, "\n[[service]]\nid = \"gamma\"\nname = \"Gamma\"\nkind = \"noop\"\n")
+	if _, ok := live.current().service("gamma"); !ok || live.lastErr != "" {
+		t.Fatal("the fixed overlay is not served")
+	}
+}
+
+func TestWebReloadNeverDropsThePasswordOffLoopback(t *testing.T) {
+	code, state := t.TempDir(), t.TempDir()
+	writeFile(t, filepath.Join(code, "plugroot.toml"), fmt.Sprintf("\n[plugroot]\nstate_root = %q\n", state))
+	writeFile(t, filepath.Join(state, ".env"), "PLUGROOT_WEB_PASSWORD=hunter2\n")
+	remote := &webContext{root: code, binds: []string{fmt.Sprintf("100.%d.0.1:8786", 64)}, ctx: mustContext(t, code)}
+	loopback := &webContext{root: code, binds: []string{"127.0.0.1:8786"}, ctx: mustContext(t, code)}
+	writeFile(t, filepath.Join(state, ".env"), "# the password line removed\n")
+	if webPassword(remote.current()) == nil {
+		t.Fatal("a reload left a non-loopback dashboard without a password")
+	}
+	if webPassword(loopback.current()) != nil {
+		t.Fatal("a loopback dashboard did not take the new .env")
+	}
+}
+
 func TestWebCtEqAndHMACVectors(t *testing.T) {
 	if !ctEq(nil, nil) || !ctEq([]byte("abc"), []byte("abc")) || ctEq([]byte("abc"), []byte("abd")) ||
 		ctEq([]byte("abc"), []byte("abcd")) || ctEq([]byte("abc"), nil) {

@@ -50,6 +50,7 @@ func cmdWeb(ctx *Context, args []string) (int, error) {
 	if err := requirePasswordOffLoopback(binds, webPassword(ctx)); err != nil {
 		return 0, err
 	}
+	live := &webContext{root: ctx.Root, binds: binds, ctx: ctx}
 	var listeners []net.Listener
 	for _, bind := range binds {
 		listener, err := listen(bind)
@@ -67,7 +68,7 @@ func cmdWeb(ctx *Context, args []string) (int, error) {
 		wg.Add(1)
 		go func(l net.Listener) {
 			defer wg.Done()
-			serveWebListener(ctx, l)
+			serveWebListener(live, l)
 		}(listener)
 	}
 	wg.Wait()
@@ -212,7 +213,38 @@ func parseRustIP(host string) net.IP {
 	return ip
 }
 
-func serveWebListener(ctx *Context, listener net.Listener) {
+// webContext is the dashboard's manifest, read again for every request (as
+// the TUI does on refresh), so a service added to or changed in the overlay
+// shows without restarting the dashboard. When the files no longer load, or
+// would leave a non-loopback bind without a password, the last good manifest
+// stays and the reason is logged once.
+type webContext struct {
+	root    string
+	binds   []string
+	mu      sync.Mutex
+	ctx     *Context
+	lastErr string
+}
+
+func (w *webContext) current() *Context {
+	next, err := loadContext(w.root)
+	if err == nil {
+		err = requirePasswordOffLoopback(w.binds, webPassword(next))
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if err != nil {
+		if message := err.Error(); message != w.lastErr {
+			fmt.Fprintf(os.Stderr, "warning: manifest not reloaded, serving the last one read: %s\n", message)
+			w.lastErr = message
+		}
+		return w.ctx
+	}
+	w.ctx, w.lastErr = next, ""
+	return next
+}
+
+func serveWebListener(live *webContext, listener net.Listener) {
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
@@ -224,7 +256,7 @@ func serveWebListener(ctx *Context, listener net.Listener) {
 		}
 		go func() {
 			defer conn.Close()
-			handleHTTP(ctx, conn)
+			handleHTTP(live.current(), conn)
 		}()
 	}
 }
